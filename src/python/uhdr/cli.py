@@ -127,7 +127,7 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("src")
     b.add_argument("-o", "--out", required=True)
     b.add_argument("--long-edge", type=int, default=2048)
-    b.add_argument("--strength", type=float, default=0.85, help="增益强度 0..1")
+    b.add_argument("--strength", type=float, default=0.70, help="增益强度 0..1（0.70 为目视定档）")
     b.add_argument("--quality", type=int, default=95)
     b.add_argument("--profile", default="local", choices=["off", "local", "wechat"],
                    help="off=仅全局映射 / local=加局部色调映射 / wechat=为二次压缩留余量")

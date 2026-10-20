@@ -224,3 +224,40 @@ if opt.contrast != 1.0:
 Local Laplacian Filters（保边、halo 少）、OpenCV 的 Drago/Durand/Reinhard/Mantiuk、
 darktable 的 tone equalizer + filmic rgb、LLF-LUT（3D LUT + Laplacian，移动端友好）、HDRNet（bilateral grid）。
 本项目当前用 guided filter 而非高斯模糊，正是为规避 halo。
+
+
+---
+
+## 7. B 侧定档结论（2026-10-21 00:05）
+
+### 7.1 四档实测（同一张真实样张，profile=local）
+
+| 档位 | 体积KB | 暗部均值 | 中间调 | 高光 | 高频能量 | 红色强度 |
+|---|---|---|---|---|---|---|
+| 源 SDR | — | 35.3 | 98.8 | 208.9 | 10.15 | 87.4 |
+| strength 0.70 | 2183 | 56.8 | 128.8 | 235.3 | 6.47 | 101.9 |
+| strength 0.85 | 2203 | 60.7 | 133.1 | 237.7 | 6.46 | 99.9 |
+| strength 1.00 | 2218 | 64.2 | 137.4 | 240.0 | 6.44 | 97.7 |
+
+### 7.2 定档 `strength = 0.70`（已写入默认值）
+
+目视依据：0.70 提亮明显、红色仍浓郁、木纹层次最好；0.85 略过；1.0 红色发淡发黄、有过曝倾向。
+三处默认值已统一：`bake.py` / `cli.py` / `HdrBaker.kt`。
+
+### 7.3 一个未解释的指标（P1 待查）
+
+**高频能量从 10.15 降到 6.4x（−36%），但目视细节反而更清楚。**
+两种解释：
+1. 指标本身对绝对亮度敏感：整体提亮后相邻像素差的相对值下降，但**可见**细节增加；
+2. 确实存在细节损失：`range_compress=0.88` 压了 base 层，若 `detail_gain` 不足会变平。
+
+**待办**：用「结构相似度（SSIM）+ 局部对比在等亮度归一化后的值」复核。
+在此之前，**不要再用「高频能量」单独判断画质**，它在这类亮度大幅变化的场景会误导。
+
+### 7.4 LTM 未移植到 Android（P1）
+
+`HdrBaker.kt` 目前只有全局映射（soft knee + sRGB 域 S 曲线），**没有 guided filter 局部色调映射**，
+因此 App 端效果弱于 Python 的 `local` 档。移植要点：
+- guided filter 用可分离 box blur（积分图）实现，半径按短边 1/48
+- 在 log2 域做 base/detail 分离，detail 增益 1.30，黑位重锚 0.0020
+- 注意 Kotlin 无 numpy，需用 FloatArray 手动管理，单帧 2048×1536 预计 200–400 ms

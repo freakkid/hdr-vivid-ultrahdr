@@ -22,7 +22,7 @@ object HdrBaker {
 
     data class Options(
         val longEdge: Int = 2048,
-        val strength: Float = 0.85f,     // 增益强度，1.0 = 完全按元数据恢复
+        val strength: Float = 0.70f,     // 增益强度，1.0 = 完全按元数据恢复
         val whitePercentile: Float = 0.995f,
         val knee: Float = 0.75f,
         val saturation: Float = 1.12f,

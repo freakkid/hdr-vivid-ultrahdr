@@ -36,7 +36,7 @@ _LUMA = np.array([0.2126, 0.7152, 0.0722], dtype=np.float32)
 @dataclass
 class BakeOptions:
     long_edge: int = 2048
-    strength: float = 0.85       # 增益强度 0..1，1.0 = 完全按元数据恢复
+    strength: float = 0.70       # 增益强度 0..1，1.0 = 完全按元数据恢复
     white_percentile: float = 99.5
     knee: float = 0.75           # 软膝起点（归一化亮度）
     saturation: float = 1.12     # 饱和度补偿，抵消压缩后的暗淡
