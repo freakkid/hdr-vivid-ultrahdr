@@ -6,6 +6,30 @@
 - 目标：普通设备当 SDR 看（不发灰、不过曝），支持 Ultra HDR 的设备能读增益图还原 HDR
 - 边界：**编码保真在本地可控，第三方平台是否保留元数据不可控**（详见 `docs/01-design.md` 第 A 章）
 
+## 源码导航（Android 实现在这里）
+
+Android 源码目录较深（`src/android/app/src/main/java/com/finn/hdr/`），GitHub 上容易被折叠，直接点下面：
+
+| 模块 | 文件 | 行数 |
+|---|---|---|
+| 入口界面 | [MainActivity.kt](src/android/app/src/main/java/com/finn/hdr/MainActivity.kt) | 138 |
+| **HDR 源解析**（ISO 21496-1 / XMP / CUVA 判定） | [HdrSourceParser.kt](src/android/app/src/main/java/com/finn/hdr/HdrSourceParser.kt) | 326 |
+| **ISO 21496-1 元数据** | [IsoGainMap.kt](src/android/app/src/main/java/com/finn/hdr/IsoGainMap.kt) | 129 |
+| 增益图几何变换 | [GainMapGeometry.kt](src/android/app/src/main/java/com/finn/hdr/GainMapGeometry.kt) | 110 |
+| **Ultra HDR 封装**（纯 Kotlin，无 NDK 也能跑） | [UltraHdrPackager.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrPackager.kt) | 199 |
+| 导出编排 | [UltraHdrExporter.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrExporter.kt) | 142 |
+| 导出后自检 | [MetadataValidator.kt](src/android/app/src/main/java/com/finn/hdr/MetadataValidator.kt) | 219 |
+| 分享引导（文件/原图/直接发图） | [ShareGuidance.kt](src/android/app/src/main/java/com/finn/hdr/ShareGuidance.kt) | 97 |
+| libultrahdr JNI 门面 | [UltraHdrNative.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrNative.kt) | 64 |
+| JNI 实现（API-4） | [uhdr_jni.cpp](src/android/app/src/main/cpp/uhdr_jni.cpp) | 184 |
+| 构建配置 | [app/build.gradle.kts](src/android/app/build.gradle.kts) ｜ [CMakeLists.txt](src/android/app/src/main/cpp/CMakeLists.txt) | — |
+
+合计 **Kotlin 1424 行 + C++ 184 行**，产物 `app-debug.apk` 2.2 MB。
+
+> `src/android/local.properties` 是唯一未入库的文件：它记录本机 SDK 绝对路径，
+> 每台机器不同，已由 `.gitignore` 排除（Android 项目通行做法）。缺它时构建会提示
+> `SDK location not found`，按 `docs/03-toolchain-setup.md` 的 3.3-3 重建即可。
+
 ## 这是什么 / 不是什么
 
 这是**一套 JPEG 容器格式工程**，落地形态有两个 App 实现 + 一套桌面工具链：
