@@ -66,14 +66,25 @@ class UltraHdrExporter {
 
         // 封装：优先 native（libultrahdr API-4）；无 NDK 时回退纯 Kotlin 封装器，
         // 保证「不装 NDK 也能编出可安装 APK 做真机结构验证」。
+        // 增益上限优先沿用源图（ISO 21496-1 / XMP 解出的 log2 值），缺失才用默认。
+        // 注意 hdrgm 的 GainMapMax 与 HDRCapacityMax 都是 **log2 域**，
+        // 把线性 boost（如 4.0）写进去等于宣称 16 倍容量，是隐蔽的语义错误。
+        val maxLog2 = src.meta?.maxContentBoost ?: opt.maxBoostLog2
+        val gamma = src.meta?.gamma ?: opt.gamma
+        if (src.meta != null) {
+            steps += "meta(source): GainMapMax=${"%.4f".format(maxLog2)} Gamma=${"%.4f".format(gamma)}"
+        } else {
+            steps += "meta(default): GainMapMax=${"%.4f".format(maxLog2)}"
+        }
+
         var engine = "native(API-4)"
         var out: ByteArray? = null
         try {
             out = UltraHdrNative.nativeEncode(
                 baseJpeg, gmJpeg,
                 minBoost = 1.0f,
-                maxBoost = Math.pow(2.0, opt.maxBoostLog2.toDouble()).toFloat(),
-                gamma = opt.gamma,
+                maxBoost = Math.pow(2.0, maxLog2.toDouble()).toFloat(),
+                gamma = gamma,
                 baseQuality = opt.baseQuality,
                 gainmapQuality = opt.gainMapQuality,
             )
@@ -85,13 +96,12 @@ class UltraHdrExporter {
         }
         if (out == null) {
             engine = "kotlin-packager"
-            val boost = Math.pow(2.0, opt.maxBoostLog2.toDouble())
             out = UltraHdrPackager.pack(
                 baseJpeg, gmJpeg,
                 UltraHdrPackager.Meta(
-                    gainMapMax = opt.maxBoostLog2.toDouble(),
-                    gamma = opt.gamma.toDouble(),
-                    hdrCapacityMax = boost,
+                    gainMapMax = maxLog2.toDouble(),
+                    gamma = gamma.toDouble(),
+                    hdrCapacityMax = maxLog2.toDouble(),
                 ),
             ).first
         }

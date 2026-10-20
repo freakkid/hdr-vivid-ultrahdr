@@ -43,10 +43,10 @@ object MetadataValidator {
         checks += Check("xmp_primary_item", hasPrimary)
         checks += Check("xmp_gainmap_item", hasGainMap)
 
-        val hdrgmOk = xmpText?.let {
-            it.contains("hdrgm:Version") && it.contains("hdrgm:GainMapMax") && it.contains("hdrgm:Gamma")
-        } == true
-        checks += Check("xmp_hdrgm", hdrgmOk, "含 hdrgm:Version/GainMapMax/Gamma")
+        // 设计约定：主图只放 hdrgm:Version 信号位，完整参数写在增益图自身 XMP。
+        // 若在这里要求主图含 GainMapMax/Gamma，必然误报失败。
+        val primaryVersionOk = xmpText?.contains("hdrgm:Version") == true
+        checks += Check("primary_version", primaryVersionOk, "主图含 hdrgm:Version 信号位")
 
         if (mpfSeg == null) {
             checks += Check("mpf_present", false, "缺少 MPF APP2")
@@ -64,6 +64,14 @@ object MetadataValidator {
         checks += Check("mpf_points_to_soi", atSoi, "增益图绝对偏移=$abs")
 
         if (atSoi) {
+            // 增益图自身必须携带完整 hdrgm 参数（规范把参数放在增益图 XMP 里）
+            val gmXmp = xmpTextAt(jpeg, abs)
+            val required = listOf("GainMapMin", "GainMapMax", "Gamma",
+                "OffsetSDR", "OffsetHDR", "HDRCapacityMin", "HDRCapacityMax")
+            val missing = if (gmXmp == null) required else required.filter { !gmXmp.contains("hdrgm:$it") }
+            checks += Check("gainmap_xmp_present", missing.isEmpty(),
+                if (gmXmp == null) "增益图缺少 XMP APP1" else "缺失字段: ${missing.joinToString(",")}")
+
             val baseSz = sofSize(jpeg, 0)
             val gmSz = sofSize(jpeg, abs)
             if (baseSz != null && gmSz != null) {
@@ -102,7 +110,7 @@ object MetadataValidator {
     private fun scanImages(b: ByteArray): List<Pair<Int, Int>> {
         val out = mutableListOf<Pair<Int, Int>>()
         var pos = 0
-        while (pos + 2 < b.size) {
+        while (pos + 1 < b.size) {
             if (b[pos] == 0xFF.toByte() && b[pos + 1] == 0xD8.toByte()) {
                 val end = imageEnd(b, pos) ?: break
                 out += pos to end
@@ -114,10 +122,12 @@ object MetadataValidator {
 
     private fun imageEnd(b: ByteArray, start: Int): Int? {
         var pos = start + 2
-        while (pos + 3 < b.size) {
+        // 同 HdrSourceParser：EOI 可能在文件最后 2 字节，边界必须用 pos+1
+        while (pos + 1 < b.size) {
             if (b[pos] != 0xFF.toByte()) { pos++; continue }
             val m = b[pos + 1].toInt() and 0xFF
             if (m == 0xD9) return pos + 2
+            if (pos + 3 >= b.size) return null
             val len = ((b[pos + 2].toInt() and 0xFF) shl 8) or (b[pos + 3].toInt() and 0xFF)
             if (len < 2) return null
             if (m == 0xDA) {
@@ -133,6 +143,31 @@ object MetadataValidator {
                 continue
             }
             pos += 2 + len
+        }
+        return null
+    }
+
+    /** 从指定图像起点的头部段里提取 XMP 文本（找不到返回 null）。 */
+    private fun xmpTextAt(b: ByteArray, start: Int): String? {
+        val sig = "http://ns.adobe.com/xap/1.0/\u0000".toByteArray(Charsets.US_ASCII)
+        var pos = start + 2
+        while (pos + 3 < b.size) {
+            if (b[pos] != 0xFF.toByte()) return null
+            val m = b[pos + 1].toInt() and 0xFF
+            if (m == 0xD8) { pos += 2; continue }
+            val len = ((b[pos + 2].toInt() and 0xFF) shl 8) or (b[pos + 3].toInt() and 0xFF)
+            if (len < 2) return null
+            val segEnd = pos + 2 + len
+            if (segEnd > b.size) return null
+            if (m == 0xE1 && segEnd - (pos + 4) > sig.size) {
+                var hit = true
+                for (i in sig.indices) if (b[pos + 4 + i] != sig[i]) { hit = false; break }
+                if (hit) {
+                    return String(b, pos + 4 + sig.size, segEnd - pos - 4 - sig.size, Charsets.UTF_8)
+                }
+            }
+            if (m == 0xDA) return null
+            pos = segEnd
         }
         return null
     }

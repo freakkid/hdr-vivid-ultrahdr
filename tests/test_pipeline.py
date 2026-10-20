@@ -14,7 +14,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src", "python"
 
 from PIL import Image  # noqa: E402
 
-from uhdr import gainmap_ops, jpegseg, mpf, pipeline, synthetic, validator, vivid_source, writer, xmp  # noqa: E402
+from uhdr import gainmap_ops, iso21496, jpegseg, mpf, pipeline, synthetic, validator, vivid_source, writer, xmp  # noqa: E402
 
 
 def _make_pair(bw=1200, bh=900, div=4):
@@ -36,6 +36,16 @@ class TestJpegSeg(unittest.TestCase):
         images = jpegseg.find_all_images(data)
         for s, e in images:
             self.assertEqual(data[e - 2:e], b"\xff\xd9")
+
+    def test_last_image_eoi_at_file_end(self):
+        """最后一张图的 EOI 正好在文件末尾——这是真机上最容易踩的边界。
+
+        Kotlin 版曾用 `pos + 3 < size` 作为循环条件，导致末尾 2 字节的 FFD9
+        读不到，副图被静默丢弃（表现为「增益图丢失」）。
+        """
+        data = synthetic.make_cuva_sample(600)
+        images = jpegseg.find_all_images(data)
+        self.assertEqual(images[-1][1], len(data), "最后一张图的区间终点应等于文件长度")
 
 
 class TestMpf(unittest.TestCase):
@@ -101,6 +111,73 @@ class TestGeometry(unittest.TestCase):
         gm = Image.new("L", (400, 100))
         with self.assertRaises(ValueError):
             gainmap_ops.assert_consistent(base, gm)
+
+
+class TestIso21496(unittest.TestCase):
+    """ISO 21496-1 APP2 是 XMP 之外的第二套元数据载体。
+
+    真实教训：华为设备产出的文件可以只有 ISO 载体、完全没有 XMP，
+    只认 XMP 的解析器会把这类文件误判成「无增益图」。
+    """
+
+    def test_roundtrip_standard_order(self):
+        meta = iso21496.IsoGainMapMeta(
+            min_content_boost=1.0, max_content_boost=4.0, gamma=1.0,
+            offset_sdr=1 / 64, offset_hdr=1 / 64,
+            hdr_capacity_min=1.0, hdr_capacity_max=4.0,
+        )
+        payload = iso21496.build_app2(meta)
+        self.assertTrue(payload.startswith(iso21496.ISO_SIG))
+        back = iso21496.parse_app2(payload)
+        self.assertIsNotNone(back)
+        self.assertAlmostEqual(back.max_content_boost, 4.0, places=2)
+        self.assertAlmostEqual(back.gamma, 1.0, places=3)
+        self.assertTrue(back.is_plausible())
+
+    def test_version_only_block_returns_none(self):
+        """主图侧只写 version 块时，不应被当成完整元数据。"""
+        meta = iso21496.IsoGainMapMeta()
+        payload = iso21496.build_app2(meta, version_block_only=True)
+        self.assertIsNone(iso21496.parse_app2(payload))
+
+    def test_measured_layout_fallback(self):
+        """实测华为样本 [0, 2.148, 0, 2.169, 1.0, 0, 0] 触发回退，且 gamma 保守为 1.0。"""
+        import struct
+        body = bytearray(b"\x00\x00\x00\x00\x40")
+        for v in (0.0, 2.148445, 0.0, 2.169925, 1.0, 0.0, 0.0):
+            num, den = int(v * 1_000_000), 1_000_000
+            body += struct.pack(">iI", num, den)
+        meta = iso21496.parse_app2(iso21496.ISO_SIG + bytes(body))
+        self.assertIsNotNone(meta)
+        self.assertEqual(meta.gamma, 1.0, "gamma 不应被误猜为 2.148")
+        self.assertGreater(meta.max_content_boost, 4.0)
+        self.assertLess(meta.max_content_boost, 5.0)
+        self.assertTrue(meta.is_plausible())
+
+    def test_log2_conversion(self):
+        meta = iso21496.IsoGainMapMeta(min_content_boost=1.0, max_content_boost=4.0,
+                                       gamma=1.0, hdr_capacity_min=1.0, hdr_capacity_max=4.0)
+        d = meta.to_log2_dict()
+        self.assertAlmostEqual(d["GainMapMax"], 2.0, places=3)
+        self.assertAlmostEqual(d["GainMapMin"], 0.0, places=3)
+
+
+class TestSourceDetection(unittest.TestCase):
+    """判定优先级：ISO 证据必须压过 _cuva 之类弱证据。"""
+
+    def test_iso_beats_cuva_marker(self):
+        base = synthetic.make_cuva_sample(900)
+        # 合成源本身含 _cuva 标记，但结构上是 APP5 → 应判 CUVA
+        src = vivid_source.parse_hdr_source(base)
+        self.assertEqual(src.container, "cuva")
+
+    def test_plain_jpeg(self):
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.new("RGB", (120, 90), (90, 120, 150)).save(buf, "JPEG", quality=90)
+        src = vivid_source.parse_hdr_source(buf.getvalue())
+        self.assertEqual(src.container, "plain_jpeg")
+        self.assertFalse(src.has_gainmap)
 
 
 class TestEndToEnd(unittest.TestCase):

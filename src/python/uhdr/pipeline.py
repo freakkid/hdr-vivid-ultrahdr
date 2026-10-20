@@ -150,13 +150,21 @@ def export(
     gm_jpeg = _encode_gainmap(gm, opt.gainmap_quality)
     steps.append(f"encode: base={len(main_jpeg)}B q={opt.main_quality} | gainmap={len(gm_jpeg)}B q={opt.gainmap_quality}")
 
-    meta = xmp.GainMapMeta(
-        gain_map_min=0.0,
-        gain_map_max=opt.gain_map_max_log2,
-        gamma=1.0,
-        hdr_capacity_min=0.0,
-        hdr_capacity_max=opt.gain_map_max_log2,
-    )
+    # 增益参数优先沿用源图（ISO 21496-1 或 XMP 解出的），仅在源图缺失时用默认值。
+    # 直接套默认值会把源的真实动态范围压平，是"看着像 HDR 但不对"的常见原因。
+    if source.meta is not None:
+        meta = source.meta
+        steps.append(f"meta(source): GainMapMax={meta.gain_map_max:.4f} "
+                     f"Gamma={meta.gamma:.4f} CapacityMax={meta.hdr_capacity_max:.4f}")
+    else:
+        meta = xmp.GainMapMeta(
+            gain_map_min=0.0,
+            gain_map_max=opt.gain_map_max_log2,
+            gamma=1.0,
+            hdr_capacity_min=0.0,
+            hdr_capacity_max=opt.gain_map_max_log2,
+        )
+        steps.append("meta(default): 源图未提供增益参数，使用默认 log2=%.2f" % opt.gain_map_max_log2)
     uhdr, layout = writer.build_uhdr_jpeg(main_jpeg, gm_jpeg, meta)
     steps.append(f"package: primary_len={layout.primary_len} gm_offset={layout.gainmap_offset} total={layout.total_len}")
 

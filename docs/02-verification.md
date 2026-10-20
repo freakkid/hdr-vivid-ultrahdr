@@ -88,7 +88,6 @@
 | P5 | 自检器遇损坏文件直接抛异常 | 未做异常兜底 | `validate_bytes` 外层捕获 → 转为 `internal.validator_crashed` 失败项 |
 
 ## 2.6 尚未验证（不得对外声称通过）
-
 | 项 | 原因 | 下一步 |
 |---|---|---|
 | 真实华为 HDR Vivid 样张 | 无版权合规样张 | 用自有机型拍摄 12 张覆盖逆光/高饱和/暗部 |
@@ -97,3 +96,84 @@
 | 微信三路径存活率 | 需真实收发 | 按 `acceptance-matrix.md` 第 1 节填表 |
 | MPF Primary offset 的跨端共识（0 vs 相对 TIFF 头） | 本文按业界惯例取 0 | 用 libultrahdr 解码器反读本实现产物，比对 |
 | CUVA → hdrgm 的色彩等价性 | 缺换算依据 | 见 01 的 H-5 |
+
+
+---
+
+## 2.7 真机实测：ISO 21496-1 载体与两类边界 bug（2026-10-20 晚）
+
+### 现象
+
+用户在华为 Mate 30 上通过蓝牙接收一张 HDR 样张，用旧版 App 打开显示
+**「容器：PLAIN_JPEG / 增益图：无」**，据此判断「传输把增益图丢了」。
+
+### 实测结论：增益图完好，是解析器认不出
+
+把文件拉回桌面逐段分析（6,102,654 B）：
+
+```
+APP1 Exif
+APP2 urn:iso:std:iso:ts:21496:-1   ← ISO 元数据（二进制，非 XMP）
+APP2 MPF                            ← 索引副图
+APP2 ICC_PROFILE
+[主图 5,770,185 B  5760×4320]
+[增益图 332,469 B  2048×1536]        ← 完整存在，比例 0.3556
+```
+
+- 元数据只有 **ISO 21496-1** 形式，**完全没有 XMP GContainer**
+- MPF：entry0 size=5770185 offset=0；entry1 size=332469 offset=5768701
+- 主图 APP2 只有 version 块（32 B），完整参数在**增益图的 APP2**（89 B）
+- 文件扩展名是 `.heic`，但字节是 JPEG（`ffd8ffe1`）——扩展名不可信，必须看魔数
+
+### 成因一：只认 XMP 的解析器把 ISO 误判成 CUVA
+
+判定顺序错误：「EXIF 含 `_cuva`」被当成强证据，而华为文件即使转成 ISO 容器仍保留
+`_cuva` 字样，于是判定为 CUVA，且因为不见 APP5 而继续降级，最终丢到「无增益图」。
+
+**修正**：判定改为严格优先级
+ISO 21496-1 APP2 → libultrahdr probe → XMP GContainer → APP5 → 厂商标记（弱证据，最后）。
+新增 `iso21496.py` 解析 APP2 二进制元数据（28 B 签名 + 5 B header + 7×8 B fraction）。
+
+### 成因二：Kotlin 扫描边界差 2 字节，副图被静默丢弃
+
+```kotlin
+while (pos + 3 < b.size)      // 旧
+while (pos + 1 < b.size)      // 新
+```
+
+增益图的 `FFD9` 正好位于文件最后 2 字节，`pos + 3` 的循环条件提前退出，
+`imageEnd()` 返回 `null`，`findImages()` 直接 `break` —— 只剩主图。
+Python 侧用的是 `pos + 1 < len`，所以**桌面测试一直通过、真机一直失败**。
+`MetadataValidator` 存在同一处复制粘贴缺陷，一并修正。
+
+### 成因三：HDRCapacityMax 写了线性值
+
+Android 侧 `hdrCapacityMax = 2^log2` 把线性 boost（4.0）写进 log2 域字段，
+等于宣称 16 倍容量。桌面 validator 已补 `meta.capacity_matches_gainmap`
+（差 >0.01 报警），并在旧产物上实测拦下：`GainMapMax=2.0 vs HDRCapacityMax=4.0`。
+
+### 修复后的真机结果
+
+```
+容器：ISO_ULTRA_HDR          增益图：有（332469 B）   Make：HUAWEI
+完整增益参数取自增益图 APP2（原始值: 0, 2.1484, 0, 2.1699, 1.0, 0, 0）
+resize: base=2048x1536 gm=728x546
+package[kotlin-packager]: 1334476B
+validate: ok=true errors=0
+✓ two_images ✓ xmp_present ✓ xmp_primary_item ✓ xmp_gainmap_item
+✓ primary_version ✓ mpf_present ✓ mpf_points_to_soi
+✓ gainmap_xmp_present ✓ aspect_consistent ✓ gm_not_larger
+已写出：IMG_1792510226792_HDR.jpg（1334476 B）
+```
+
+**交叉验证**：把 Android 产出的文件 `run-as` 拉回桌面，用 Python 独立解析器校验，
+**19 项全 PASS**（`primary_size=2048x1536`、`gainmap_size=728x546`、
+`gainmap_scale=0.3555`、offset 双向一致、尾部 0 字节）。
+
+### 可复用检查清单
+
+1. 扩展名不可信，一律看魔数（`FFD8FFE1` = JPEG，`....ftyp` = ISOBMFF）
+2. 多图 JPEG 的扫描循环边界必须允许 `pos+1`，因为 EOI 可能贴着文件尾
+3. 「厂商标记」只能是弱证据，不能压过容器结构证据
+4. 同一套解析逻辑在 Kotlin / Python 双实现时，必须用真实样张双向交叉验证
+5. 双写元数据后，validator 的断言要跟着改（主图只查 Version，完整参数查增益图）

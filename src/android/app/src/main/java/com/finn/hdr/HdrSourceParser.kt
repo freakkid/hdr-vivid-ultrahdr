@@ -1,28 +1,32 @@
 package com.finn.hdr
 
+import java.io.ByteArrayOutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * HDR 源图解析：把「华为 HDR Vivid 静图」拆成 SDR 主图 + 增益图 + 元数据。
+ * HDR 源图解析：ISO Ultra HDR（XMP 或 ISO 21496-1 两种载体）与华为 CUVA。
  *
- * 双通道策略：
- *  1. 优先 libultrahdr probe（对 ISO Ultra HDR / 标准 MPF 最可靠）
- *  2. 回退自研 CUVA 扫描（华为老机型：副图以 APP5 起始 + EXIF Make=HUAWEI/_cuva）
+ * 判定优先级（高 → 低），不允许靠猜：
+ *  1. 主图带 APP2 `urn:iso:std:iso:ts:21496:-1`  → ISO Ultra HDR（ISO 载体）
+ *  2. libultrahdr probe 成功                     → ISO Ultra HDR
+ *  3. 主图带 XMP `<Container:Directory>`          → ISO Ultra HDR（XMP 载体）
+ *  4. 副图首段为 APP5(0xFFE5)                     → CUVA
+ *  5. EXIF Make=HUAWEI 且含 `_cuva`（弱证据）      → CUVA，需标注置信度低
  *
- * 注意：CUVA 的增益图语义与 hdrgm 并不等价，直接搬运会引入亮度/色度偏差。
- * 本类的输出因此保留 [HdrSource.needsBoostRecompute] 标记，由导出层决定走
- * 「直接封装」还是「反解 HDR → 重算增益图」。
+ * 实测教训：华为产出的文件可以只有 ISO 21496-1、完全没有 XMP，同时 EXIF 里
+ * 仍保留 `_cuva` 字样。若把「含 _cuva」当强证据，就会把 ISO Ultra HDR 误判成
+ * CUVA，用户侧表现为「传输把增益图弄丢了」——实际文件完好，是解析器认错。
  */
 object HdrSourceParser {
 
-    private const val M_SOI = 0xFF
-    private const val APP0 = 0xE0
     private const val APP1 = 0xE1
     private const val APP2 = 0xE2
     private const val APP5 = 0xE5
     private const val SOS = 0xDA
     private const val EOI = 0xD9
+
+    private val XMP_SIG = "http://ns.adobe.com/xap/1.0/\u0000".toByteArray(Charsets.US_ASCII)
 
     enum class Container { CUVA, ISO_ULTRA_HDR, PLAIN_JPEG, UNKNOWN_MPO }
 
@@ -34,86 +38,195 @@ object HdrSourceParser {
         val exifMake: String?,
         val needsBoostRecompute: Boolean,
         val notes: MutableList<String> = mutableListOf(),
+        val isoMeta: IsoGainMap.Meta? = null,
     ) {
         val hasGainMap: Boolean get() = gainMapJpeg != null
+        val metadataCarrier: String
+            get() = when {
+                isoMeta != null -> "ISO 21496-1"
+                meta != null -> "XMP"
+                else -> "无"
+            }
     }
 
-    /** 图像在字节流中的区间。 */
     private data class Range(val start: Int, val end: Int)
+
+    private class PrimaryScan {
+        var xmpStart = -1
+        var xmpEnd = -1
+        var isoStart = -1
+        var isoEnd = -1
+        var hasMpf = false
+    }
 
     fun parse(bytes: ByteArray): HdrSource {
         val notes = mutableListOf<String>()
-
-        // ---- 通道 1：libultrahdr probe（native 不可用时静默跳过）----
-        val (probeOk, probeMeta) = try {
-            UltraHdrNative.probe(bytes)
-        } catch (t: Throwable) {
-            notes += "native probe 不可用（${t.javaClass.simpleName}），仅用本地扫描"
-            false to null
-        }
         val ranges = findImages(bytes)
         if (ranges.isEmpty()) throw IllegalArgumentException("不是合法 JPEG")
 
         val sdr = bytes.copyOfRange(ranges[0].start, ranges[0].end)
         val make = parseExifMake(bytes, ranges[0])
-
-        if (probeOk && ranges.size >= 2) {
-            val gm = bytes.copyOfRange(ranges[1].start, ranges[1].end)
-            notes += "probe 成功：按 ISO Ultra HDR 处理"
-            return HdrSource(Container.ISO_ULTRA_HDR, sdr, gm, probeMeta, make,
-                needsBoostRecompute = false, notes = notes)
-        }
+        val scan = scanPrimary(bytes, ranges[0])
 
         if (ranges.size < 2) {
-            notes += "单图 JPEG，无增益图"
-            return HdrSource(Container.PLAIN_JPEG, sdr, null, null, make,
+            notes += "单图 JPEG，无增益图：只能输出纯 SDR"
+            return HdrSource(Container.PLAIN_JPEG, sdr, null, null, make, false, notes)
+        }
+
+        val second = ranges[1]
+        val gmRaw = bytes.copyOfRange(second.start, second.end)
+
+        // ---- 证据 1：ISO 21496-1 APP2（最强，优先于 probe 与 _cuva）----
+        if (scan.isoStart >= 0) {
+            var iso = findIsoInGainMap(bytes, second)?.let { r ->
+                IsoGainMap.parse(bytes, r.start, r.end)
+            }
+            if (iso != null) {
+                notes += "完整增益参数取自增益图 APP2（原始值: " +
+                    iso.rawValues.joinToString(",") { String.format(java.util.Locale.US, "%.4f", it) } + "）"
+            } else {
+                iso = IsoGainMap.parse(bytes, scan.isoStart, scan.isoEnd)
+            }
+            if (iso == null) {
+                iso = IsoGainMap.Meta(notes = mutableListOf("仅发现 version 块，参数回退默认值"))
+            }
+            notes += iso.notes
+
+            val lg = iso.toLog2()
+            val meta = UltraHdrNative.GainMapMeta(
+                minContentBoost = (lg["GainMapMin"] ?: 0.0).toFloat(),
+                maxContentBoost = (lg["GainMapMax"] ?: 2.0).toFloat(),
+                gamma = (lg["Gamma"] ?: 1.0).toFloat(),
+                offsetSdr = (lg["OffsetSDR"] ?: 1.0 / 64).toFloat(),
+                offsetHdr = (lg["OffsetHDR"] ?: 1.0 / 64).toFloat(),
+                hdrCapacityMin = (lg["HDRCapacityMin"] ?: 0.0).toFloat(),
+                hdrCapacityMax = (lg["HDRCapacityMax"] ?: 2.0).toFloat(),
+            )
+            notes += "增益参数由 ISO 21496-1 换算为 hdrgm（log2 域）"
+            return HdrSource(Container.ISO_ULTRA_HDR, sdr, gmRaw, meta, make,
+                needsBoostRecompute = false, notes = notes, isoMeta = iso)
+        }
+
+        // ---- 证据 2：libultrahdr probe（native 不可用时静默跳过）----
+        val (probeOk, probeMeta) = try {
+            UltraHdrNative.probe(bytes)
+        } catch (t: Throwable) {
+            notes += "native probe 不可用（${t.javaClass.simpleName}）"
+            false to null
+        }
+        if (probeOk) {
+            notes += "libultrahdr probe 成功：按 ISO Ultra HDR 处理"
+            return HdrSource(Container.ISO_ULTRA_HDR, sdr, gmRaw, probeMeta, make,
                 needsBoostRecompute = false, notes = notes)
         }
 
-        // ---- 通道 2：CUVA 扫描 ----
-        val second = ranges[1]
+        // ---- 证据 3：XMP GContainer ----
+        if (scan.xmpStart >= 0 && scan.hasMpf) {
+            val txt = String(bytes, scan.xmpStart + XMP_SIG.size, scan.xmpEnd - scan.xmpStart - XMP_SIG.size)
+            if (txt.contains("Semantic=\"GainMap\"") || txt.contains("Semantic='GainMap'")) {
+                notes += "主图 XMP 含 GContainer 增益图项"
+                return HdrSource(Container.ISO_ULTRA_HDR, sdr, gmRaw, probeMeta, make,
+                    needsBoostRecompute = false, notes = notes)
+            }
+        }
+
+        // ---- 证据 4：CUVA 的 APP5 副图 ----
         val firstMarker = firstAppMarker(bytes, second.start)
         if (firstMarker == APP5) {
-            notes += "副图首段为 APP5(0xFFE5)，判定 CUVA / 华为 HDR Vivid"
-            notes += "CUVA 增益图需换算为 hdrgm 语义，建议反解 HDR 后重算增益图"
+            notes += "副图首段为 APP5(0xFFE5)，判定为 CUVA / 华为 HDR Vivid"
+            notes += "CUVA 增益图语义与 hdrgm 不等价，建议走「反解 HDR→重算增益图」"
             return HdrSource(Container.CUVA, sdr, stripApp5(bytes, second), null, make,
                 needsBoostRecompute = true, notes = notes)
         }
 
-        if (make?.uppercase()?.startsWith("HUAWEI") == true || containsCuvaTag(bytes)) {
-            notes += "通过 EXIF/字节标记判定 CUVA，但副图缺少 APP5"
+        // ---- 证据 5：厂商标记（弱证据，放最后）----
+        if (make?.uppercase()?.startsWith("HUAWEI") == true && containsCuvaTag(bytes)) {
+            notes += "仅凭 EXIF Make=HUAWEI 与 _cuva 标记判定 CUVA（未见 APP5，置信度低）"
             return HdrSource(Container.CUVA, sdr, stripApp5(bytes, second), null, make,
                 needsBoostRecompute = true, notes = notes)
         }
 
-        notes += "存在副图但未识别容器类型，按未知 MPO 处理（不生成 HDR 元数据）"
+        notes += "存在副图但缺少 ISO/XMP/APP5 证据，按未知 MPO 处理（不生成 HDR 元数据）"
         return HdrSource(Container.UNKNOWN_MPO, sdr, stripApp5(bytes, second), null, make,
             needsBoostRecompute = false, notes = notes)
     }
 
-    // ---------------- JPEG 结构扫描 ----------------
+    // ---------------- 段扫描 ----------------
+
+    private fun scanPrimary(b: ByteArray, r: Range): PrimaryScan {
+        val s = PrimaryScan()
+        var pos = r.start + 2
+        while (pos + 3 < r.end) {
+            if (b[pos] != 0xFF.toByte()) break
+            val m = b[pos + 1].toInt() and 0xFF
+            if (m == 0xD8) { pos += 2; continue }
+            val len = ((b[pos + 2].toInt() and 0xFF) shl 8) or (b[pos + 3].toInt() and 0xFF)
+            if (len < 2) break
+            val segEnd = pos + 2 + len
+            if (segEnd > r.end) break
+            val pStart = pos + 4
+            if (m == APP1 && startsWith(b, pStart, segEnd, XMP_SIG)) {
+                s.xmpStart = pStart; s.xmpEnd = segEnd
+            } else if (m == APP2) {
+                if (IsoGainMap.startsWithSig(b, pStart)) {
+                    s.isoStart = pStart; s.isoEnd = segEnd
+                } else if (startsWith(b, pStart, segEnd, "MPF\u0000".toByteArray(Charsets.US_ASCII))) {
+                    s.hasMpf = true
+                }
+            }
+            if (m == SOS) break
+            pos = segEnd
+        }
+        return s
+    }
+
+    private fun findIsoInGainMap(b: ByteArray, r: Range): Range? {
+        var pos = r.start + 2
+        while (pos + 3 < r.end) {
+            if (b[pos] != 0xFF.toByte()) break
+            val m = b[pos + 1].toInt() and 0xFF
+            if (m == 0xD8) { pos += 2; continue }
+            val len = ((b[pos + 2].toInt() and 0xFF) shl 8) or (b[pos + 3].toInt() and 0xFF)
+            if (len < 2) break
+            val segEnd = pos + 2 + len
+            if (segEnd > r.end) break
+            if (m == APP2 && IsoGainMap.startsWithSig(b, pos + 4)) return Range(pos + 4, segEnd)
+            if (m == SOS) break
+            pos = segEnd
+        }
+        return null
+    }
+
+    private fun startsWith(b: ByteArray, at: Int, limit: Int, sig: ByteArray): Boolean {
+        if (at + sig.size > limit) return false
+        for (i in sig.indices) if (b[at + i] != sig[i]) return false
+        return true
+    }
+
+    // ---------------- 基础 JPEG 结构 ----------------
 
     private fun findImages(b: ByteArray): List<Range> {
         val out = mutableListOf<Range>()
         var pos = 0
-        while (pos + 2 < b.size) {
+        while (pos + 1 < b.size) {
             if (b[pos] == 0xFF.toByte() && b[pos + 1] == 0xD8.toByte()) {
                 val end = imageEnd(b, pos) ?: break
                 out += Range(pos, end)
                 pos = end
-            } else {
-                pos++
-            }
+            } else pos++
         }
         return out
     }
 
     private fun imageEnd(b: ByteArray, start: Int): Int? {
         var pos = start + 2
-        while (pos + 3 < b.size) {
+        // 边界必须是 pos+1：EOI(FFD9) 可能正好位于文件最后两个字节，
+        // 用 pos+3 会提前退出并返回 null，导致副图被静默丢弃（真机踩过的坑）。
+        while (pos + 1 < b.size) {
             if (b[pos] != 0xFF.toByte()) { pos++; continue }
             val m = b[pos + 1].toInt() and 0xFF
             if (m == EOI) return pos + 2
+            if (pos + 3 >= b.size) return null
             val len = ((b[pos + 2].toInt() and 0xFF) shl 8) or (b[pos + 3].toInt() and 0xFF)
             if (len < 2) return null
             if (m == SOS) {
@@ -122,8 +235,7 @@ object HdrSourceParser {
                     if (b[pos] == 0xFF.toByte()) {
                         val n = b[pos + 1].toInt() and 0xFF
                         if (n != 0x00 && n !in 0xD0..0xD7) break
-                        pos += 2
-                        continue
+                        pos += 2; continue
                     }
                     pos++
                 }
@@ -146,9 +258,8 @@ object HdrSourceParser {
         return -1
     }
 
-    /** 去掉副图自带的 APP5 私有段，输出干净 JPEG。 */
     private fun stripApp5(b: ByteArray, r: Range): ByteArray {
-        val out = java.io.ByteArrayOutputStream(r.end - r.start)
+        val out = ByteArrayOutputStream(r.end - r.start)
         out.write(b, r.start, 2)
         var pos = r.start + 2
         while (pos + 3 < r.end) {
@@ -160,7 +271,7 @@ object HdrSourceParser {
             if (m != APP5) out.write(b, pos, segEnd - pos)
             pos = segEnd
         }
-        return out.toByteArray()
+        return b.copyOfRange(r.start, r.end)
     }
 
     private fun parseExifMake(b: ByteArray, r: Range): String? {
@@ -185,7 +296,7 @@ object HdrSourceParser {
         if (tiff + 8 > limit) return null
         val little = b[tiff] == 'I'.code.toByte()
         val order = if (little) ByteOrder.LITTLE_ENDIAN else ByteOrder.BIG_ENDIAN
-        // slice()：让 position=0 对齐 TIFF 起点，之后所有索引都是 TIFF 内相对偏移
+        // slice()：position 对齐 TIFF 起点，索引即 TIFF 内相对偏移
         val buf = ByteBuffer.wrap(b, tiff, limit - tiff).slice().order(order)
         val ifdOff = buf.getInt(4)
         if (ifdOff <= 0 || ifdOff + 2 > buf.limit()) return null

@@ -194,6 +194,13 @@ def _validate_bytes(data: bytes, path: str = "<memory>", *, ratio_tol: float = 0
                 "Gamma": effective.get("Gamma"),
             }
 
+            # 两个字段都是 log2 域，实践中应一致。写成线性 boost（如 4.0）会让
+            # 读取端认为容量是 16x，属于隐蔽的语义错误，这里作为门禁拦下。
+            delta = abs(eff_meta.hdr_capacity_max - eff_meta.gain_map_max)
+            rep.add("meta.capacity_matches_gainmap", delta <= 0.01, "WARN",
+                    detail=f"GainMapMax={eff_meta.gain_map_max:.4f} "
+                           f"HDRCapacityMax={eff_meta.hdr_capacity_max:.4f} 差={delta:.4f}（应 <0.01）")
+
             gm_end = None
             try:
                 gm_end = jpegseg.find_image_end(data, abs_off)
