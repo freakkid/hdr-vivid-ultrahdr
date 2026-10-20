@@ -1,0 +1,22 @@
+#!/bin/sh
+# Gradle Wrapper 启动脚本（精简版，等价于官方 gradlew）
+set -e
+
+APP_HOME=$(cd "$(dirname "$0")" && pwd)
+CLASSPATH="$APP_HOME/gradle/wrapper/gradle-wrapper.jar"
+
+if [ -n "$JAVA_HOME" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+    JAVACMD="$JAVA_HOME/bin/java"
+else
+    JAVACMD=java
+fi
+
+if ! command -v "$JAVACMD" >/dev/null 2>&1 && [ ! -x "$JAVACMD" ]; then
+    echo "错误：未找到 java。请安装 JDK 17 并设置 JAVA_HOME。" >&2
+    exit 1
+fi
+
+exec "$JAVACMD" \
+    -Dorg.gradle.appname=gradlew \
+    -classpath "$CLASSPATH" \
+    org.gradle.wrapper.GradleWrapperMain "$@"

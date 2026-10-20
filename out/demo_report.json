@@ -1,0 +1,161 @@
+{
+  "src_path": "C:/Users/ugnam/Workspace/code/hdr-vivid-ultrahdr\\samples\\sample_cuva_3000x2250.jpg",
+  "out_path": "C:/Users/ugnam/Workspace/code/hdr-vivid-ultrahdr\\out\\sample.ultrahdr.jpg",
+  "ok": true,
+  "source_container": "cuva",
+  "steps": [
+    "parse: container=cuva has_gainmap=True",
+    "decode: base=(3000, 2250) gainmap=(750, 562) mode_base=RGB mode_gm=L",
+    "geometry(源): base=3000x2250 gm=750x562 scale=(0.2500,0.2498)",
+    "resize: base=(2048, 1536) gm=(512, 384) k=0.6827",
+    "encode: base=145371B q=92 | gainmap=5322B q=85",
+    "package: primary_len=146461 gm_offset=145496 total=152526",
+    "validate: ok=True errors=0"
+  ],
+  "layout": {
+    "primary_len": 146461,
+    "gainmap_len": 6065,
+    "gainmap_offset": 145496,
+    "xmp_len": 955,
+    "mpf_len": 135,
+    "total_len": 152526
+  },
+  "validation": {
+    "path": "C:/Users/ugnam/Workspace/code/hdr-vivid-ultrahdr\\out\\sample.ultrahdr.jpg",
+    "ok": true,
+    "facts": {
+      "hdrgm_source": "gainmap",
+      "hdrgm": {
+        "Version": "1.0",
+        "GainMapMax": "2.000000",
+        "HDRCapacityMax": "2.000000",
+        "Gamma": "1.000000"
+      },
+      "primary_size": "2048x1536",
+      "gainmap_size": "512x384",
+      "gainmap_scale": 0.25
+    },
+    "checks": [
+      {
+        "id": "file.soi_eoi",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "文件首尾为 SOI/EOI"
+      },
+      {
+        "id": "container.two_images",
+        "ok": true,
+        "level": "WARN",
+        "detail": "检测到 2 个 JPEG 图像（Ultra HDR 需要 >= 2）"
+      },
+      {
+        "id": "meta.xmp_present",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "存在 XMP APP1 段"
+      },
+      {
+        "id": "meta.xmp_parsed",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "解析到 2 个媒体项"
+      },
+      {
+        "id": "meta.primary_item",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "XMP 含 Semantic=Primary 项"
+      },
+      {
+        "id": "meta.gainmap_item",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "XMP 含 Semantic=GainMap 项"
+      },
+      {
+        "id": "meta.primary_version",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "hdrgm:Version=\"1.0\""
+      },
+      {
+        "id": "meta.mpf_present",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "MPF 含 2 个 entry"
+      },
+      {
+        "id": "offset.mpf_points_to_soi",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "MPF 偏移 145496（绝对 146461）指向 SOI"
+      },
+      {
+        "id": "offset.mpf_length_match",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "MPF size=6065 vs XMP length=6065"
+      },
+      {
+        "id": "offset.xmp_mpf_agree",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "MPF offset=145496 vs XMP offset=145496"
+      },
+      {
+        "id": "meta.gainmap_xmp_present",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "增益图 XMP 字段数=9"
+      },
+      {
+        "id": "meta.hdrgm_valid",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "hdrgm 参数自洽（来源：增益图）"
+      },
+      {
+        "id": "offset.gainmap_complete",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "增益图范围 [146461, 152526)"
+      },
+      {
+        "id": "offset.no_trailing_garbage",
+        "ok": true,
+        "level": "WARN",
+        "detail": "文件尾部剩余 0 字节"
+      },
+      {
+        "id": "geometry.aspect_consistent",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "宽比=0.2500 高比=0.2500（容差 0.02）"
+      },
+      {
+        "id": "geometry.gainmap_not_larger",
+        "ok": true,
+        "level": "WARN",
+        "detail": "增益图尺寸不应大于主图"
+      },
+      {
+        "id": "offset.primary_len_match",
+        "ok": true,
+        "level": "ERROR",
+        "detail": "XMP primary length=146461 vs 增益图绝对起点=146461"
+      },
+      {
+        "id": "offset.primary_offset_zero",
+        "ok": true,
+        "level": "INFO",
+        "detail": "XMP primary offset=0（惯例为 0）"
+      }
+    ]
+  },
+  "size_before": 421311,
+  "size_after": 152526,
+  "warnings": [
+    "检测到 APP5 副图，判定为 CUVA / 华为 HDR Vivid 容器",
+    "CUVA 增益图语义与 hdrgm 不完全等价，建议走「反解 HDR→重算增益图」路径"
+  ]
+}

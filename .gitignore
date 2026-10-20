@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 生成产物
+tests/_tmp/
+out/*.log
+src/android/*.log
+*.log
+
+# Android / Gradle
+src/android/.gradle/
+src/android/build/
+src/android/app/build/
+src/android/.idea/
+src/android/local.properties
+src/android/.cxx/
+src/android/app/.cxx/
+*.apk
+*.aab
+*.iml
+captures/
+
+# native 依赖（按需 clone，不入库）
+third_party/
+
+# OS
+.DS_Store
+Thumbs.db
