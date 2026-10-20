@@ -4,7 +4,29 @@
 工程骨架与可运行参考实现。
 
 - 目标：普通设备当 SDR 看（不发灰、不过曝），支持 Ultra HDR 的设备能读增益图还原 HDR
-- 边界：**编码保真在本地可控，第三方平台是否保留元数据不可控**（详见 `docs/技术方案.md` 第 A 章）
+- 边界：**编码保真在本地可控，第三方平台是否保留元数据不可控**（详见 `docs/01-design.md` 第 A 章）
+
+## 这是什么 / 不是什么
+
+这是**一套 JPEG 容器格式工程**，落地形态有两个 App 实现 + 一套桌面工具链：
+
+| 类别 | 目录 | 语言 | 是否进安装包 |
+|---|---|---|---|
+| Android App（主实现） | `src/android/` | Kotlin + C++(JNI) | ✅ 进（APK 2.2 MB，110 条目，**0 个 Python 文件**） |
+| HarmonyOS App（另一条链路） | `src/harmony/`、`src/ets/` | ArkTS | ✅ 进对应 HAP |
+| 容器参考实现与校验器 | `src/python/uhdr/` | Python | ❌ 不进，只在开发机/CI 跑 |
+| 回归测试 | `tests/` | Python | ❌ 不进 |
+| 工具链脚本 | `scripts/` | Python / Shell | ❌ 不进 |
+
+**为什么要有 Python**（不是重复劳动）：
+
+1. **独立校验**：判断「写出的容器对不对」不能用写它的同一份代码。Python 解析器与 Kotlin
+   实现由两套独立代码互证——真机产物拉回桌面跑 `uhdr.cli validate`，是唯一的外部证据。
+2. **桌面取证**：真机上「增益图不见了」这类问题，必须把文件拉下来逐段拆（本次就是靠它
+   定位到 ISO 21496-1 载体缺失 + Kotlin 的 `pos+3` 边界 bug）。
+3. **快速回归**：Python 27 项测试 1.6 秒，Android 构建 20–60 秒，反馈速度差一个量级。
+
+如果你只需要 App、不打算维护桌面工具链，见文末「收敛为纯安卓项目」。
 
 ## 目录
 
@@ -82,3 +104,19 @@ Python 依赖仅 `Pillow`（用于像素采样）。运行环境建议使用隔�
 - 真实华为样张（受版权与隐私限制，需自备）
 - libultrahdr 源码（建议以 submodule 引入 `third_party/libultrahdr`）
 - CUVA → hdrgm 的精确色彩换算（属 H-5 待核实项）
+
+## 收敛为纯安卓项目（可选）
+
+如果你只交付 App、不打算长期维护桌面工具链，可以这样做而**不影响 App 任何功能**：
+
+```bash
+# 1) 工具链移出源码树，语义上降级为 devtools
+mkdir -p tools && git mv src/python tools/uhdr-ref && git mv scripts tools/scripts
+# 2) 同步 CI 与文档路径（.github/workflows/android-build.yml 里的 PYTHONPATH）
+# 3) App 侧只保留 src/android/ + third_party/libultrahdr
+```
+
+代价：失去「独立解析器交叉验证」与「1.6 秒快速回归」，出问题时只能靠真机 logcat 盲猜。
+本次那个「桌面通过、真机必挂」的边界 bug，正是靠双实现对照才在 10 分钟内定位的。
+
+保留建议：**Kotlin 与 Python 两套解析器至少留一套独立校验**，否则容器写错了没人能发现。
