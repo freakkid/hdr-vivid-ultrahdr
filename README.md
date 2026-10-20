@@ -1,5 +1,7 @@
 # hdr-vivid-ultrahdr
 
+> **接手项目先读 [HANDOVER.md](HANDOVER.md)** —— 现状、待办优先级、环境搭建、已知坑、常用命令都在里面。
+
 把**华为 HDR Vivid 静图**转换为 **Ultra HDR 式 JPEG**（SDR 主图 + 增益图 + XMP + MPF）的
 工程骨架与可运行参考实现。
 
