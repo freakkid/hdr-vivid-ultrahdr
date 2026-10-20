@@ -1,5 +1,7 @@
 package com.finn.hdr
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
@@ -10,20 +12,24 @@ import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import java.io.ByteArrayOutputStream
 import java.io.File
 
 /**
- * 最小可用入口：选图 → 解析 → 导出 → 自检 → 以文件分享。
+ * 探针界面：选图 → 同时产出两种结果。
  *
- * 这是给真机验证用的"探针界面"，不是产品 UI。它存在的目的：
- *  1. 证明整条链路在真机上能跑通
- *  2. 把每一步的结构自检结果原样显示出来（而不是只给一个"成功"）
+ *   1. 烘焙图 `*_BAKED.jpg`  —— 普通 JPEG，HDR 效果已压进去，微信/任何设备直接可见
+ *   2. Ultra HDR `*_HDR.jpg` —— 保留增益图，仅支持 Ultra HDR 的设备能还原
+ *
+ * 主按钮给烘焙图（用户的真实诉求），Ultra HDR 作为附赠。
  */
 class MainActivity : ComponentActivity() {
 
     private lateinit var logView: TextView
-    private lateinit var shareButton: Button
-    private var exportedFile: File? = null
+    private lateinit var shareBaked: Button
+    private lateinit var shareHdr: Button
+    private var bakedFile: File? = null
+    private var hdrFile: File? = null
 
     private val pickImage =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -39,7 +45,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val pickButton = Button(this).apply {
-            text = "选择 HDR 照片并导出"
+            text = "选择 HDR 照片并处理"
             setOnClickListener {
                 pickImage.launch(
                     PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
@@ -47,14 +53,16 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        shareButton = Button(this).apply {
-            text = "以文件发送（保留 HDR 信息）"
+        shareBaked = Button(this).apply {
+            text = "发送烘焙图（微信可见 HDR 效果）"
             isEnabled = false
-            setOnClickListener {
-                val f = exportedFile ?: return@setOnClickListener
-                runCatching { ShareGuidance.shareAsFile(this@MainActivity, f) }
-                    .onFailure { appendLog("\n分享失败：${it.message}") }
-            }
+            setOnClickListener { share(suggestedTsf(bakedFile)) }
+        }
+
+        shareHdr = Button(this).apply {
+            text = "发送 Ultra HDR（需设备支持）"
+            isEnabled = false
+            setOnClickListener { share(suggestedTsf(hdrFile)) }
         }
 
         logView = TextView(this).apply {
@@ -65,7 +73,8 @@ class MainActivity : ComponentActivity() {
 
         val scroll = ScrollView(this).apply { addView(logView) }
         root.addView(pickButton)
-        root.addView(shareButton)
+        root.addView(shareBaked)
+        root.addView(shareHdr)
         root.addView(
             scroll,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -73,9 +82,18 @@ class MainActivity : ComponentActivity() {
         setContentView(root)
     }
 
+    private fun suggestedTsf(f: File?): File? = f?.takeIf { it.exists() }
+
+    private fun share(f: File?) {
+        if (f == null) return
+        runCatching { ShareGuidance.shareAsFile(this, f) }
+            .onFailure { appendLog("\n分享失败：${it.message}") }
+    }
+
     private fun handle(uri: Uri) {
         logView.text = "处理中…"
-        shareButton.isEnabled = false
+        shareBaked.isEnabled = false
+        shareHdr.isEnabled = false
 
         Thread {
             val log = StringBuilder()
@@ -96,40 +114,77 @@ class MainActivity : ComponentActivity() {
                     return@Thread
                 }
 
-                val result = UltraHdrExporter().export(
-                    src,
-                    UltraHdrExporter.Options(longEdge = 2048),
-                )
+                val dir = File(cacheDir, "exports").apply { mkdirs() }
+                val baseName = "IMG_${System.currentTimeMillis()}"
+
+                // ---------- 1) 烘焙：普通 JPEG，HDR 效果已压进去 ----------
                 log.appendLine()
+                log.appendLine("— 烘焙为普通图 —")
+                val base = decodeScaled(src.sdrJpeg, 2048)
+                val gm = decodeScaled(src.gainMapJpeg!!, 2048)
+                val (baked, stats) = HdrBaker.bake(base, gm, src.meta)
+                log.appendLine("尺寸：${stats.outSize.first}x${stats.outSize.second}")
+                log.appendLine("HDR 峰值：${"%.2f".format(stats.hdrPeak)}x  "
+                    + "白点：${"%.2f".format(stats.whitePoint)}  "
+                    + "最大 boost：${"%.2f".format(stats.maxBoost)}x")
+                log.appendLine("高光裁切：${"%.2f".format(stats.clippedRatio * 100)}%")
+
+                val bos = ByteArrayOutputStream()
+                baked.compress(Bitmap.CompressFormat.JPEG, 95, bos)
+                val bakedJpeg = bos.toByteArray()
+                val bf = File(dir, "${baseName}_BAKED.jpg")
+                bf.writeBytes(bakedJpeg)
+                bakedFile = bf
+                log.appendLine("已写出：${bf.name}（${bakedJpeg.size / 1024} KB）")
+
+                base.recycle(); gm.recycle(); baked.recycle()
+
+                // ---------- 2) Ultra HDR：保留增益图 ----------
+                log.appendLine()
+                log.appendLine("— 封装 Ultra HDR —")
+                val result = UltraHdrExporter().export(src, UltraHdrExporter.Options(longEdge = 2048))
                 result.steps.forEach { log.appendLine(it) }
                 result.warnings.forEach { log.appendLine("⚠ $it") }
-
-                log.appendLine()
-                log.appendLine("— 自检 —")
                 result.validation?.checks?.forEach {
                     log.appendLine("${if (it.ok) "✓" else "✗"} ${it.id}  ${it.detail}")
                 }
-
                 if (result.ok && result.jpeg != null) {
-                    val dir = File(cacheDir, "exports").apply { mkdirs() }
-                    val f = File(dir, ShareGuidance.suggestedFileName(System.currentTimeMillis().toString()))
-                    f.writeBytes(result.jpeg)
-                    exportedFile = f
-                    log.appendLine()
-                    log.appendLine("已写出：${f.name}（${f.length()} B）")
-                    runOnUiThread { shareButton.isEnabled = true }
+                    val hf = File(dir, "${baseName}_HDR.jpg")
+                    hf.writeBytes(result.jpeg)
+                    hdrFile = hf
+                    log.appendLine("已写出：${hf.name}（${result.jpeg.size / 1024} KB）")
                 } else {
-                    log.appendLine()
-                    log.appendLine("自检未通过 → 不标记为 HDR，请勿对外宣称已保留 HDR。")
+                    log.appendLine("自检未通过 → 不标记为 HDR")
                 }
+
+                runOnUiThread {
+                    shareBaked.isEnabled = bakedFile?.exists() == true
+                    shareHdr.isEnabled = hdrFile?.exists() == true
+                }
+                log.appendLine()
+                log.appendLine("烘焙图可直接用微信发，对方无需支持 HDR。")
             } catch (t: Throwable) {
                 log.appendLine("失败：${t.javaClass.simpleName}: ${t.message}")
-                if (t is UnsatisfiedLinkError) {
-                    log.appendLine("提示：native 库未编译，当前应已回退纯 Kotlin 封装器。")
+                if (t is OutOfMemoryError) {
+                    log.appendLine("提示：大图解码内存不足，建议先清理后台或降低长边。")
                 }
             }
             publish(log.toString())
         }.start()
+    }
+
+    /** 按目标长边做采样解码，避免 5760×4320 直接解码耗尽内存。 */
+    private fun decodeScaled(bytes: ByteArray, targetLong: Int): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= targetLong) sample *= 2
+        val opt = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opt)
+            ?: error("解码失败（sample=$sample）")
     }
 
     private fun publish(text: String) = runOnUiThread { logView.text = text }

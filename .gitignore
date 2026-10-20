@@ -29,3 +29,9 @@ third_party/
 # OS
 .DS_Store
 Thumbs.db
+
+# 烘焙产物（含真实照片内容，不入库）
+out/baked*.jpg
+out/bake_compare.jpg
+out/preview*.jpg
+out/t_*.jpg

@@ -13,7 +13,7 @@ import json
 import os
 import sys
 
-from . import pipeline, synthetic, validator, vivid_source
+from . import bake, pipeline, synthetic, validator, vivid_source
 
 
 def cmd_demo(args: argparse.Namespace) -> int:
@@ -69,6 +69,30 @@ def cmd_export(args: argparse.Namespace) -> int:
     return 0 if res.ok else 2
 
 
+def cmd_bake(args: argparse.Namespace) -> int:
+    """把 HDR 源烘焙成普通 SDR JPEG（不依赖接收端 HDR 能力）。"""
+    opt = bake.BakeOptions(
+        long_edge=args.long_edge,
+        profile=args.profile,
+        strength=args.strength,
+        quality=args.quality,
+    )
+    src = vivid_source.parse_file(args.src)
+    print(src.describe())
+    data, stats = bake.bake(src, opt)
+    out = args.out
+    os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
+    with open(out, "wb") as f:
+        f.write(data)
+    print(f"[bake:{stats.profile}] {out}  {len(data):,} B")
+    print(f"  主图 {stats.base_size[0]}x{stats.base_size[1]}  增益图 {stats.gainmap_size[0]}x{stats.gainmap_size[1]}")
+    print(f"  白点 {stats.white_point:.3f}  峰值 {stats.hdr_peak:.3f}  裁切率 {stats.clipped_ratio*100:.2f}%")
+    if stats.ltm:
+        print(f"  LTM r={stats.ltm['ltm_radius_px']}px  detail={stats.ltm['ltm_detail_gain']}  "
+              f"compress={stats.ltm['ltm_range_compress']}  暗部提亮 x{stats.ltm['shadow_lift_x']:.2f}")
+    return 0
+
+
 def cmd_validate(args: argparse.Namespace) -> int:
     rep = validator.validate_file(args.file)
     print(rep.pretty())
@@ -98,6 +122,18 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--gainmap-quality", type=int, default=85)
     e.add_argument("--gain-map-max", type=float, default=2.0)
     e.set_defaults(func=cmd_export)
+
+    b = sub.add_parser("bake", help="烘焙成普通 JPEG（HDR 效果压进 SDR，微信可见）")
+    b.add_argument("src")
+    b.add_argument("-o", "--out", required=True)
+    b.add_argument("--long-edge", type=int, default=2048)
+    b.add_argument("--strength", type=float, default=0.85, help="增益强度 0..1")
+    b.add_argument("--quality", type=int, default=95)
+    b.add_argument("--profile", default="local", choices=["off", "local", "wechat"],
+                   help="off=仅全局映射 / local=加局部色调映射 / wechat=为二次压缩留余量")
+    b.add_argument("--anchor", default="sdr-white", choices=["sdr-white", "peak"],
+                   help="白点锚定方式")
+    b.set_defaults(func=cmd_bake)
 
     v = sub.add_parser("validate", help="文件自检")
     v.add_argument("file")

@@ -70,7 +70,11 @@ object MetadataValidator {
                 "OffsetSDR", "OffsetHDR", "HDRCapacityMin", "HDRCapacityMax")
             val missing = if (gmXmp == null) required else required.filter { !gmXmp.contains("hdrgm:$it") }
             checks += Check("gainmap_xmp_present", missing.isEmpty(),
-                if (gmXmp == null) "增益图缺少 XMP APP1" else "缺失字段: ${missing.joinToString(",")}")
+                when {
+                    gmXmp == null -> "增益图缺少 XMP APP1"
+                    missing.isEmpty() -> "7 个 hdrgm 字段齐全"
+                    else -> "缺失字段: ${missing.joinToString(",")}"
+                })
 
             val baseSz = sofSize(jpeg, 0)
             val gmSz = sofSize(jpeg, abs)
