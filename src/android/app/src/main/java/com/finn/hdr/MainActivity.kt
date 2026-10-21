@@ -5,9 +5,11 @@ import android.graphics.BitmapFactory
 import android.graphics.Typeface
 import android.net.Uri
 import android.os.Bundle
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.ComponentActivity
 import androidx.activity.result.PickVisualMediaRequest
@@ -28,8 +30,16 @@ class MainActivity : ComponentActivity() {
     private lateinit var logView: TextView
     private lateinit var shareBaked: Button
     private lateinit var shareHdr: Button
+    private lateinit var profileSpinner: Spinner
     private var bakedFile: File? = null
     private var hdrFile: File? = null
+
+    /** 与 Python bake.py 的 profile 语义一致；顺序即 UI 顺序。 */
+    private val profiles = listOf(
+        "local" to "本地观看（local：局部色调映射）",
+        "wechat" to "微信分享（wechat：克制映射+重压缩余量）",
+        "off" to "仅全局映射（off：旧行为，A/B 对照）",
+    )
 
     private val pickImage =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -71,8 +81,17 @@ class MainActivity : ComponentActivity() {
             setTextIsSelectable(true)
         }
 
+        profileSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                profiles.map { it.second },
+            )
+        }
+
         val scroll = ScrollView(this).apply { addView(logView) }
         root.addView(pickButton)
+        root.addView(profileSpinner)
         root.addView(shareBaked)
         root.addView(shareHdr)
         root.addView(
@@ -94,6 +113,7 @@ class MainActivity : ComponentActivity() {
         logView.text = "处理中…"
         shareBaked.isEnabled = false
         shareHdr.isEnabled = false
+        val profile = profiles[profileSpinner.selectedItemPosition].first
 
         Thread {
             val log = StringBuilder()
@@ -120,17 +140,28 @@ class MainActivity : ComponentActivity() {
                 // ---------- 1) 烘焙：普通 JPEG，HDR 效果已压进去 ----------
                 log.appendLine()
                 log.appendLine("— 烘焙为普通图 —")
+                log.appendLine("档位：$profile")
                 val base = decodeScaled(src.sdrJpeg, 2048)
                 val gm = decodeScaled(src.gainMapJpeg!!, 2048)
-                val (baked, stats) = HdrBaker.bake(base, gm, src.meta)
+                val (baked, stats) = HdrBaker.bake(
+                    base, gm, src.meta,
+                    HdrBaker.Options(profile = profile),
+                )
                 log.appendLine("尺寸：${stats.outSize.first}x${stats.outSize.second}")
                 log.appendLine("HDR 峰值：${"%.2f".format(stats.hdrPeak)}x  "
                     + "白点：${"%.2f".format(stats.whitePoint)}  "
                     + "最大 boost：${"%.2f".format(stats.maxBoost)}x")
                 log.appendLine("高光裁切：${"%.2f".format(stats.clippedRatio * 100)}%")
+                if (profile != "off") {
+                    log.appendLine("LTM：半径=${stats.ltmRadiusPx}px  "
+                        + "detail增益=${"%.2f".format(stats.ltmDetailGain)}  "
+                        + "暗部提升=${"%.2f".format(stats.ltmShadowLift)}x")
+                }
 
+                // 微信档与 Python 侧一致：降质量为二次压缩留余量
+                val quality = if (profile == "wechat") 88 else 95
                 val bos = ByteArrayOutputStream()
-                baked.compress(Bitmap.CompressFormat.JPEG, 95, bos)
+                baked.compress(Bitmap.CompressFormat.JPEG, quality, bos)
                 val bakedJpeg = bos.toByteArray()
                 val bf = File(dir, "${baseName}_BAKED.jpg")
                 bf.writeBytes(bakedJpeg)

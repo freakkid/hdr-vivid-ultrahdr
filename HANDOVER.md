@@ -1,6 +1,6 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-20 23:45 ｜ 交接原因：换一台电脑继续
+> 最后更新：2026-10-21（新机器接力：环境已重建，LTM 已移植，双实现对照通过）
 > 读这一篇就能接手，不需要回看聊天记录。
 
 ---
@@ -10,12 +10,12 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG |
-| 到哪一步了 | **主链路已打通并在真机验证过**：Android App 能识别 ISO 21496-1 / XMP / CUVA 三种源，导出后 10 项自检全过，产物经 Python 独立校验 19 项全过 |
-| 明天第一件事 | 真机点一次导出，确认 `HDRCapacityMax` 修正（1 分钟，见 §3.1） |
+| 到哪一步了 | **主链路已打通并在真机验证过**（Android 识别 ISO 21496-1 / XMP / CUVA 三种源，10 项自检全过）；**烘焙链路 LTM 已移植到 App**，与 Python 侧双实现数值对照 8bit 级最大差 1 LSB；本机（macOS）构建环境已重建（JDK 17 + SDK 34，`assembleDebug` 通过） |
+| 明天第一件事 | 真机点一次导出：确认 `HDRCapacityMax` 修正（§3.1）+ 目视确认 App 端 LTM 三档效果（local/wechat/off，§3.2） |
 | 仓库 | `git@github.com:freakkid/hdr-vivid-ultrahdr.git`（私有），分支 `main` |
 | 最新提交 | 见 `git log --oneline -1` |
 
-**一句话状态：编码链路已验证可用；剩下的是「真实样张覆盖」与「第三方平台存活率」两类实测，以及一条未实现的重算路线。**
+**一句话状态：编码链路已验证可用；LTM 移植与双实现对照已完成（未真机目视）；剩下的是「真实样张覆盖」与「第三方平台存活率」两类实测。**
 
 ---
 
@@ -65,6 +65,24 @@ cd src/android && ./gradlew assembleDebug --no-daemon
 
 如果新机器能正常访问 Google，直接装 Android Studio 更省事，无需上面的手工流程。
 
+### 1.3 本机（2026-10-21，macOS）实际环境——已验证可用
+
+| 组件 | 位置 / 版本 | 备注 |
+|---|---|---|
+| JDK 17 | `/opt/homebrew/opt/openjdk@17`（17.0.20.1） | `brew install openjdk@17`；系统默认 java 是 16，**必须显式 `export JAVA_HOME`** |
+| Android SDK | `~/Library/Android/sdk`（build-tools 35.0.0 / platforms 34+35） | `local.properties` 写 `sdk.dir=/Users/huangnanxuan/Library/Android/sdk`（未入库） |
+| Gradle | wrapper 8.7（腾讯镜像已缓存） | 首次构建约 2.5 分钟（拉 AGP 8.5.2 / Kotlin 1.9.24），增量约 20 秒 |
+| Python venv | `~/.workbuddy/binaries/python/envs/default/bin/python` | 需 `pip install pillow`（numpy 已有） |
+
+```bash
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+export ANDROID_HOME=~/Library/Android/sdk
+cd src/android && bash gradlew assembleDebug --no-daemon   # gradlew 无可执行位，用 bash 调
+```
+
+双实现数值对照（需 kotlinc，见 `tests/ltm_parity/run_parity.sh`）：
+`bash tests/ltm_parity/run_parity.sh`（kotlinc 缺失时自动跳过，不算失败）。
+
 ---
 
 ## 2. 已完成（有证据）
@@ -80,6 +98,7 @@ cd src/android && ./gradlew assembleDebug --no-daemon
 | 导出后结构自检 | ✅ | 真机 10 项全过；桌面 19 项全过 |
 | 可安装 APK | ✅ | 2.2 MB，`com.finn.hdr`，minSdk 26 / targetSdk 34 |
 | 双向交叉验证 | ✅ | Android 产物拉回桌面，Python 独立解析 19 项 PASS |
+| 烘焙 LTM（App 侧局部色调映射） | ✅ | `LocalToneMapping.kt` 移植自 `ltm.py`；双实现对照 8bit 级最大差 1 LSB、无像素差 >1 LSB（`tests/ltm_parity/`）；桌面 JVM 2048×1536 411 ms。**未真机目视** |
 | Python 回归 | ✅ | 27 项通过，含 3 条负向（截断/篡改 offset/删 XMP） |
 
 ---
@@ -95,13 +114,15 @@ cd src/android && ./gradlew assembleDebug --no-daemon
 判定：出现 `validate: ok=true errors=0` 且尾部「已写出 …HDR.jpg」即通过。
 若出现 `✗ gainmap_xmp_present` 或 `✗ aspect_consistent`，把整屏文字发出来。
 
-### 3.2 【P1】真实 HDR Vivid 样张覆盖
+### 3.2 【P1】真实 HDR Vivid 样张覆盖 + App 端 LTM 目视确认
 
 目前只有 1 张真实样张（ISO 载体）。**Mate 30（麒麟 990）拍不出 HDR Vivid**，它只能当接收/显示端。
 
 需要补齐：逆光人像、高饱和、暗部细节、纯色背景 各 2–3 张，用来验证：
 - 增益图语义换算是否引入偏色（对比 HDR 合成结果做 ΔE）
 - 极端动态范围下 `max_content_boost` 会不会超界
+- **（新增）App 端 LTM 三档目视**：local / wechat / off 对比桌面 Python 同档输出，
+  重点看有无 halo（guided filter 失效）、灰雾（黑位重锚不足）、「假 HDR」感
 
 获取途径：另一台华为设备（Mate 40/P50 之后）、或在网上找 `.jpg` 格式的 Vivid 样张。
 
@@ -182,7 +203,8 @@ cd src/android && ./gradlew assembleDebug --no-daemon
 ./run.sh demo                              # 端到端演示（合成源）
 python -m uhdr.cli inspect  <file>         # 容器结构诊断
 python -m uhdr.cli validate <file>         # 结构自检
-python scripts/check_android_project.py    # Android 工程静态自检 40 项
+python scripts/check_android_project.py    # Android 工程静态自检（43 项）
+bash tests/ltm_parity/run_parity.sh        # Kotlin/Python LTM 双实现数值对照（需 kotlinc）
 
 # Android 侧
 cd src/android
@@ -230,11 +252,16 @@ adb logcat -d -b crash | grep finn                                          # �
 ## 9. 明天第一步
 
 ```bash
-git pull                                    # 确认拿到最新（当前 54d82ff 之后还有交接提交）
-cd src/android && ./gradlew assembleDebug   # 环境若已就绪，应 20 秒出包
+git pull                                    # 确认拿到最新
+export JAVA_HOME=/opt/homebrew/opt/openjdk@17
+export ANDROID_HOME=~/Library/Android/sdk
+cd src/android && bash gradlew assembleDebug --no-daemon   # 环境已就绪（见 §1.3），约 20 秒
+adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 
-然后按 §3.1 在真机点一次，把结果补进 `docs/02-verification.md` §2.7 的「修复后的真机结果」。
+然后按 §3.1 在真机点一次（选 Download/IMG_20261018_182526_111421.heic），
+把结果补进 `docs/02-verification.md` §2.7 的「修复后的真机结果」；
+顺手在 profile 下拉里切换 local / wechat / off 各导一次，完成 §3.2 的 LTM 目视确认。
 
 **如果只有 10 分钟**：做 §3.1。**如果有半天**：§3.2 + §3.3 一起推，把实测矩阵填满。
 
@@ -266,11 +293,11 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
-| **P1** | LTM 移植到 `HdrBaker.kt` | App 端目前只有全局映射，效果弱于桌面 local 档；要点见 docs/04 §7.4 |
+| ~~**P1**~~ | ~~LTM 移植到 `HdrBaker.kt`~~ | ✅ 已完成（2026-10-21）：新增 `LocalToneMapping.kt`，App 三档 profile（local/wechat/off）与 Python 语义对齐，双实现数值对照 8bit 级最大差 1 LSB（见 docs/04 §7.4）。同时修正 Kotlin 侧 P0-1 同类 bug（对比度/饱和度线性域→sRGB 域）与白点锚定（peak→sdr-white） |
 | **P1** | 高频能量指标复核 | 该指标降 36% 但目视更好，需用 SSIM + 等亮度归一化复核，勿据此判画质 |
-| P1 | 真实样张覆盖 | 目前只有 1 张真实 ISO Ultra HDR；CUVA 源未测烘焙 |
+| P1 | 真实样张覆盖 | 目前只有 1 张真实 ISO Ultra HDR；CUVA 源未测烘焙；App 端 LTM 效果待真机目视确认 |
 | P2 | 微信档实测 | `wechat` profile 的 detail_gain=1.12 未经真机二次压缩验证 |
-| P2 | 强度可调 UI | 当前 strength 写死 0.70，未暴露给用户 |
+| P2 | 强度可调 UI | 当前 strength 写死 0.70，未暴露给用户（profile 已可选） |
 
 ### 10.4 踩过的坑
 

@@ -14,19 +14,21 @@ Android 源码目录较深（`src/android/app/src/main/java/com/finn/hdr/`），
 
 | 模块 | 文件 | 行数 |
 |---|---|---|
-| 入口界面 | [MainActivity.kt](src/android/app/src/main/java/com/finn/hdr/MainActivity.kt) | 138 |
+| 入口界面（选图 → 双轨导出 + profile 选择） | [MainActivity.kt](src/android/app/src/main/java/com/finn/hdr/MainActivity.kt) | 224 |
 | **HDR 源解析**（ISO 21496-1 / XMP / CUVA 判定） | [HdrSourceParser.kt](src/android/app/src/main/java/com/finn/hdr/HdrSourceParser.kt) | 326 |
 | **ISO 21496-1 元数据** | [IsoGainMap.kt](src/android/app/src/main/java/com/finn/hdr/IsoGainMap.kt) | 129 |
 | 增益图几何变换 | [GainMapGeometry.kt](src/android/app/src/main/java/com/finn/hdr/GainMapGeometry.kt) | 110 |
 | **Ultra HDR 封装**（纯 Kotlin，无 NDK 也能跑） | [UltraHdrPackager.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrPackager.kt) | 199 |
+| **烘焙**：HDR → 普通 JPEG（微信/任何设备可见） | [HdrBaker.kt](src/android/app/src/main/java/com/finn/hdr/HdrBaker.kt) | 264 |
+| **局部色调映射**（guided filter，移植自 ltm.py） | [LocalToneMapping.kt](src/android/app/src/main/java/com/finn/hdr/LocalToneMapping.kt) | 265 |
 | 导出编排 | [UltraHdrExporter.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrExporter.kt) | 142 |
-| 导出后自检 | [MetadataValidator.kt](src/android/app/src/main/java/com/finn/hdr/MetadataValidator.kt) | 219 |
+| 导出后自检 | [MetadataValidator.kt](src/android/app/src/main/java/com/finn/hdr/MetadataValidator.kt) | 223 |
 | 分享引导（文件/原图/直接发图） | [ShareGuidance.kt](src/android/app/src/main/java/com/finn/hdr/ShareGuidance.kt) | 97 |
 | libultrahdr JNI 门面 | [UltraHdrNative.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrNative.kt) | 64 |
 | JNI 实现（API-4） | [uhdr_jni.cpp](src/android/app/src/main/cpp/uhdr_jni.cpp) | 184 |
 | 构建配置 | [app/build.gradle.kts](src/android/app/build.gradle.kts) ｜ [CMakeLists.txt](src/android/app/src/main/cpp/CMakeLists.txt) | — |
 
-合计 **Kotlin 1424 行 + C++ 184 行**，产物 `app-debug.apk` 2.2 MB。
+合计 **Kotlin 1859 行 + C++ 184 行**，产物 `app-debug.apk` 2.2 MB。
 
 > `src/android/local.properties` 是唯一未入库的文件：它记录本机 SDK 绝对路径，
 > 每台机器不同，已由 `.gitignore` 排除（Android 项目通行做法）。缺它时构建会提示
@@ -69,9 +71,11 @@ hdr-vivid-ultrahdr/
 ├── scripts/
 │   ├── check_android_project.py  ← 无 SDK 也能跑的工程静态自检（40 项）
 │   └── fetch-libultrahdr.sh      ← 拉取第三方库（仅 native 路线需要）
-├── tests/test_pipeline.py    ← 20 项回归测试（含 3 项负向）
-├── tests/acceptance-matrix.md ← 验收矩阵
-├── tests/test_matrix.md      ← 真机实测台账模板
+├── tests/
+│   ├── test_pipeline.py    ← 20 项回归测试（含 3 项负向）
+│   ├── ltm_parity/         ← Kotlin/Python 双实现数值对照（需 kotlinc，缺失自动跳过）
+│   ├── acceptance-matrix.md ← 验收矩阵
+│   └── test_matrix.md      ← 真机实测台账模板
 ├── samples/                  ← 合成的 CUVA 风格测试源
 └── out/                      ← 生成产物与自检报告
 ```

@@ -254,10 +254,36 @@ darktable 的 tone equalizer + filmic rgb、LLF-LUT（3D LUT + Laplacian，移�
 **待办**：用「结构相似度（SSIM）+ 局部对比在等亮度归一化后的值」复核。
 在此之前，**不要再用「高频能量」单独判断画质**，它在这类亮度大幅变化的场景会误导。
 
-### 7.4 LTM 未移植到 Android（P1）
+### 7.4 LTM 未移植到 Android（P1）—— ✅ 已于 2026-10-21 移植完成
 
-`HdrBaker.kt` 目前只有全局映射（soft knee + sRGB 域 S 曲线），**没有 guided filter 局部色调映射**，
-因此 App 端效果弱于 Python 的 `local` 档。移植要点：
-- guided filter 用可分离 box blur（积分图）实现，半径按短边 1/48
-- 在 log2 域做 base/detail 分离，detail 增益 1.30，黑位重锚 0.0020
-- 注意 Kotlin 无 numpy，需用 FloatArray 手动管理，单帧 2048×1536 预计 200–400 ms
+新增 `src/android/app/src/main/java/com/finn/hdr/LocalToneMapping.kt`（265 行），
+`HdrBaker.kt` 接入并新增 `profile` / `anchor` 参数（与 Python bake.py 语义对齐）。
+移植时逐条对齐的要点：
+
+- guided filter 用可分离 box blur（滑动窗口，积分图等价）实现，半径按短边 1/48
+- 在 log2 域做 base/detail 分离，detail 增益 1.32，黑位重锚 0.0020
+- 文件头注释固定了两个易错点：软膝必须收敛到 0（符号写反会「高光比中间调还黑」）；
+  「先 base 收缩、后压高光」顺序不能反（否则白点漂移）
+
+**顺带在 Kotlin 侧修复/对齐的三处**（原 HdrBaker.kt 与 Python 修好后的版本不一致）：
+
+| 项 | 原 Kotlin 行为 | 现行为（对齐 Python） |
+|---|---|---|
+| 对比度/饱和度作用域 | 线性域（P0-1 同类 bug，暗部会被压死） | `_linear_to_srgb` 之后的 sRGB 感知域 |
+| 白点锚定 | 直方图 99.5 分位（peak 锚定，整图压暗） | `anchor="sdr-white"` 默认 1.0；peak 仍可选 |
+| gain 计算 | 每像素一次 `Math.pow` | 256 项 LUT（span/minLog2/strength 为常量） |
+| 量化 | 直接截断 | 三角抖动（固定种子，确定性输出） |
+
+**双实现数值对照**（`tests/ltm_parity/`，合成输入 512×384：渐变+硬边缘+纹理+3.2x 高光+纯黑区）：
+
+| 档位 | float 级 max_abs | 8bit 级 max_lsb | lsb>1 占比 | radius / detailGain / shadowLift |
+|---|---|---|---|---|
+| local | 7.98e-04 | 1 | 0.0000% | 8 / 1.32 / 3.2831（两端一致） |
+| wechat | 6.66e-04 | 1 | 0.0000% | 10 / 1.12 / 2.2090（两端一致） |
+
+float 级残差来自 guided filter `var = mean_ii − mean_i²` 在强边缘处的 float32
+相减相消（cumsum 与滑动窗口 rounding 路径不同），量化到 8bit 后最大 1 LSB、
+无像素差 >1 LSB，即最终 JPEG 层面两端不可区分。
+
+**性能**：桌面 JVM 2048×1536 全尺寸 411 ms（中端 ARM 预计 0.6–1.2 s）；
+MainActivity 已加 profile 下拉（local / wechat / off），off 档跳过 LTM 供快速导出。
