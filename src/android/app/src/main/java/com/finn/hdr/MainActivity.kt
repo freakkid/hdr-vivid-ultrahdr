@@ -43,6 +43,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var shareBaked: Button
     private lateinit var saveBaked: Button
     private lateinit var exportRawButton: Button
+    private lateinit var exportLogButton: Button
     private lateinit var shareHdr: Button
     private lateinit var exportButton: Button
     private lateinit var profileSpinner: Spinner
@@ -242,13 +243,25 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { exportRawFile() }
         }
 
+        // 剪贴板只适合短内容：粘贴端（微信/输入法）对超长文本会静默截断，
+        // 用户会以为「复制不全」。所以另给一个写文件的出口。
         val copyLogButton = Button(this).apply {
-            text = "复制全部日志"
+            text = "复制日志（短）"
             setOnClickListener {
+                val txt = logView.text.toString()
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("hdr-log", logView.text))
-                infoView.text = "日志已复制到剪贴板（共 ${logView.text.length} 字）"
+                cm.setPrimaryClip(ClipData.newPlainText("hdr-log", txt))
+                infoView.text = if (txt.length > 3000) {
+                    "已复制 ${txt.length} 字，但**粘贴端可能截断**；建议改用下方「导出日志到下载」"
+                } else {
+                    "日志已复制（${txt.length} 字）"
+                }
             }
+        }
+
+        val exportLogButton = Button(this).apply {
+            text = "导出日志到下载"
+            setOnClickListener { exportLogFile() }
         }
 
         logView = TextView(this).apply {
@@ -273,6 +286,7 @@ class MainActivity : ComponentActivity() {
         root.addView(saveBaked)
         root.addView(exportRawButton)
         root.addView(copyLogButton)
+        root.addView(exportLogButton)
         root.addView(
             scroll,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -314,6 +328,9 @@ class MainActivity : ComponentActivity() {
                 if (fmtNow.startsWith("ISOBMFF")) {
                     // 两步走：① 把结构读出来（决定有没有增益图）② 用系统解码器解主图（让用户先看到画面）
                     appendLog("[2a/5] HEIC 结构诊断")
+                    // 先打 4~8 行摘要：屏幕上一眼能判断，且短到能粘出去（长日志在粘贴端会被截断）
+                    appendLog(HeifInspector.brief(rawBytes))
+                    appendLog("—— 以下为完整结构（可跳过，排障才需要）——")
                     appendLog(HeifInspector.describe(rawBytes))
                     lastRawBytes = rawBytes
 
@@ -615,6 +632,57 @@ class MainActivity : ComponentActivity() {
             val files = dir.listFiles()?.sortedByDescending { it.lastModified() } ?: return
             files.drop(keep).forEach { it.delete() }
         }
+    }
+
+    /**
+     * 把完整日志写到系统「下载」目录。
+     *
+     * 为什么需要它：剪贴板看着能用，但粘贴端（微信输入框、部分输入法）对超长文本
+     * 会**静默截断**，用户侧表现就是「复制不全」。文件不受这个限制，
+     * 而且能直接当文件发出去。
+     *
+     * 同时把文件落盘到 filesDir（`hdr-log.txt`）的副本也带上，便于事后追溯。
+     */
+    private fun exportLogFile() {
+        val txt = logView.text.toString()
+        if (txt.isBlank()) {
+            say("日志还是空的，请先选一张图")
+            return
+        }
+        if (android.os.Build.VERSION.SDK_INT < 29) {
+            say("系统低于 Android 10，暂不支持直接导出（可长按日志手动选择复制）")
+            return
+        }
+        val name = "hdr-log-${System.currentTimeMillis()}.txt"
+        say("导出日志中…")
+        Thread {
+            try {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_DOWNLOADS + "/HDRLog")
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                ) ?: error("MediaStore.insert 返回 null（容器可能不支持 Downloads 集合）")
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(txt.toByteArray(Charsets.UTF_8))
+                    out.flush()
+                } ?: error("openOutputStream 返回 null")
+                values.clear()
+                values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                contentResolver.update(uri, values, null, null)
+
+                runOnUiThread {
+                    infoView.text = "日志已导出：下载/HDRLog/$name（${txt.length} 字）"
+                }
+            } catch (t: Throwable) {
+                appendLog("导出日志失败：${describe(t)}")
+                runOnUiThread { infoView.text = "导出日志失败：${t.javaClass.simpleName}" }
+            }
+        }.start()
     }
 
     /**

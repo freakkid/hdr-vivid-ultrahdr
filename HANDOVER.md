@@ -133,7 +133,7 @@ HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 ## 2. 基线状态
 
 Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 28 项、静态自检 45 项、
-APK 可构建（**v0.1.6 / versionCode 7**）。**已完成项不在此罗列**——证据在 `git log` 与
+APK 可构建（**v0.1.7 / versionCode 8**）。**已完成项不在此罗列**——证据在 `git log` 与
 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
 尚未做的只有 §3。
 
@@ -184,7 +184,7 @@ HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 
 # 3) 再推新包（用绝对锚点，不依赖当前目录）
 cd "$(git rev-parse --show-toplevel)/out"
-"$HDC" file send HdrVividUltraHdr-0.1.6-debug.apk \
+"$HDC" file send HdrVividUltraHdr-0.1.7-debug.apk \
   /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.5.apk
 
 # 4) 必须看到一行 2.2 MB 的 0.1.5.apk，否则推失败
@@ -202,7 +202,7 @@ cd "$(git rev-parse --show-toplevel)/out"
 
 | 检查 | 期望 |
 |---|---|
-| 按钮共 7 个，**分两处** | **顶部两个**：「选择 HDR 照片」「用文件管理器选择（相册不可用点这个）」；**滑杆下方五个**：「导出全尺寸（2048 长边）」「发送烘焙图（微信可见 HDR 效果）」「发送 Ultra HDR（需设备支持）」「保存烘焙图到相册」「复制全部日志」|
+| 按钮共 9 个，**分两处** | **顶部两个**：「选择 HDR 照片」「用文件管理器选择（相册不可用点这个）」；**滑杆下方七个**：「导出全尺寸（2048 长边）」「发送烘焙图（微信可见 HDR 效果）」「发送 Ultra HDR（需设备支持）」「保存烘焙图到相册」「导出原图（HEIC 无增益图时用）」「复制日志（短）」「导出日志到下载」|
 | 中间控件（自上而下）| 左右两个图片位 → 一行状态文字 → **无标签的下拉框**（首项「本地观看（local：局部色调映射）」，然后「微信分享（wechat：克制映射+重压缩余量）」「仅全局映射（off：旧行为，A/B 对照）」）→ 「烘焙强度：0.70（1.0 = 完全按元数据恢复 HDR）」→ 滑杆 |
 | 首行日志 | `===== 载入 content://<authority> =====`（只到 authority、不含路径；前面还有一个空行）。注意：**不是** `URI：`，早期文档写错过 |
 | 格式行 | `格式=JPEG  头部=FF D8 FF E1 ...`；非 JPEG 时是 `格式=ISOBMFF(heic)` 等 |
@@ -257,13 +257,14 @@ v0.1.6 已针对此改了三件事，一次就能把信息取全（不必再反�
 | `HeifInspector` 补 `iloc` 长度表 | 直接看到每个 item 的字节数，判断增益图在不在、多大 |
 | `HeicDecoder`（新增）| 用系统 `ImageDecoder`/`BitmapFactory` 试解主图，成功就显示，失败给出明确原因（缺解码器 vs 内存不足）|
 | 「导出原图」按钮 | 把原始字节写进 `下载/HDRRaw/*.heic`，用户用微信传出来 → 桌面 `pillow-heif` 可彻底分析 |
+| 摘要 + 「导出日志到下载」 | 诊断压成 4~8 行 `HEIC 摘要` 置顶；完整结构折叠在后。**日志不再只靠剪贴板**：粘贴端（微信/输入法）会静默截断超长文本，表现为「复制不全」 |
 
 **判定表**（装 v0.1.6 后看日志）：
 
 | 日志特征 | 结论 | 下一步 |
 |---|---|---|
-| `aux URN` 里有 `21496` 或 `hdrgainmap` | **有增益图**，是 HDR 照片 | 值得做 HEIC 增益图提取（§3.5）|
-| `aux URN: 无` | 普通 SDR 的 HEIC | 只需支持主图解码，不做增益图 |
+| 摘要块里 `结论：有增益图（HDR 照片）` | **有增益图** | 值得做 HEIC 增益图提取（§3.5）|
+| 摘要块里 `aux=0 → 没有辅助图，不是 HDR` | 普通 SDR 的 HEIC | 只需支持主图解码，不做增益图 |
 | `解码通道：ImageDecoder` 且出图 | 容器有 HEVC 解码器 | 主图路径可行 |
 | `解码通道：none` + `连宽高都读不出` | 容器缺 HEIF 解析器 | 只能靠「导出原图」+ 桌面处理 |
 
@@ -372,7 +373,7 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 | `HdrBaker` 的 `clippedRatio` 在 LTM 档恒为 0 | LTM 路径没有回填该统计 | 只影响日志显示，输出正确 |
 | `HdrBaker` 忽略 `meta.gamma` | 恒按 gamma=1.0 处理 | 源 gamma≠1 时 HDR 曲线会偏，当前样张恰为 1.0 |
 | 导出丢 EXIF / ICC | 只保留像素与结构元数据 | 白平衡/镜头信息丢失；ICC 丢失在广色域源上可能偏色 |
-| `MediaStore` 插入缺 `IS_PENDING` | API 29+ 建议先 pending 再提交 | 相册扫描时可能短暂出现半张图 |
+| ~~`MediaStore` 插入缺 `IS_PENDING`~~ | **0.1.6 起已修**：导出原图与导出日志都走两段式提交 | —— |
 | `MetadataValidator` 只认第一个 APP1 | 多 XMP 段时可能漏判 | 我们自己的产物只有一个 APP1，不受影响 |
 | `web/index.html` 冻结 | 解析部分与 Python 对齐验证过，像素烘焙未做 | 用户明确要求「保留但别动」，**不要投入** |
 
@@ -499,7 +500,7 @@ bash ../../scripts/fetch-libultrahdr.sh                 # 需要 native 时
 # 真机 —— 鸿蒙（当前设备，用 hdc）
 HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 cd "$ROOT" && "$HDC" list targets -v        # [Empty] = 没连上
-cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.6-debug.apk \
+cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.7-debug.apk \
   /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.5.apk
 "$HDC" shell "ls -l /storage/media/100/local/files/Docs/Download/*.apk"   # 必须出现 2.2 MB 的 0.1.5；只有旧包=推失败
 "$HDC" shell "snapshot_display -f /data/local/tmp/s.jpeg"   # 截屏
@@ -507,7 +508,7 @@ cd "$ROOT/out" && "$HDC" file recv /data/local/tmp/s.jpeg "screen_$(date +%H%M%S
   # 别覆盖 phone_screen.jpeg——它已入库且被 §8 列为隐私文件
 
 # 真机 —— 安卓（旧 Mate 30 / 模拟器，用 adb）
-cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.6-debug.apk
+cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.7-debug.apk
 F="cache/exports/IMG_xxxx_HDR.jpg"       # 换成实际文件名，别照抄 <file> 占位符
 adb exec-out run-as com.finn.hdr cat "$F" > pulled.jpg \
   && test -s pulled.jpg || echo "拉取失败或文件不存在"   # 重定向会掩盖失败，必须 test -s
@@ -620,7 +621,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地现存：`out/HdrVividUltraHdr-0.1.6-debug.apk`（约 2.2 MB）。
+本地现存：`out/HdrVividUltraHdr-0.1.7-debug.apk`（约 2.2 MB）。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 
@@ -643,7 +644,8 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 | 0.1.3 | 4 | `3b3c777` | `HeifInspector` 结构探针（不解码也读出 aux URN）| 选到 HEIC 时日志出现 `ftyp` / item 表 |
 | 0.1.4 | 5 | `7a9ba54` | 日志自动滚到底、保存到相册、导出只留 10 份、旋转不重建 Activity | 「保存烘焙图到相册」按钮 |
 | 0.1.5 | 6 | `5e5eb96` | 三路审查修复：线程崩溃 / 往返丢增益参数 / EXIF 方向 / 采样解码防 OOM / 预览防抖 / 解析溢出 | 外观同 0.1.4，行为更稳 |
-| **0.1.6** | **7** | 本地构建（见下条提交）| **HEIC 主图解码** + `iloc` 长度诊断 + **「导出原图」** 按钮 | 多一个「导出原图（HEIC 无增益图时用）」按钮 |
+| 0.1.6 | 7 | `59bfb27` | **HEIC 主图解码** + `iloc` 长度诊断 + 「导出原图」 | 「导出原图（HEIC 无增益图时用）」按钮 |
+| **0.1.7** | **8** | 见 `git log` | 诊断压成 4~8 行摘要 + 日志落盘导出（解决「复制不全」）| 「复制日志（短）」「导出日志到下载」两个按钮 |
 
 ### 11.3 一眼判定手机上装的是哪版
 
@@ -651,7 +653,8 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 
 | 看到这个 | 版本 |
 |---|---|
-| 「导出原图（HEIC 无增益图时用）」按钮 | **0.1.6** |
+| 「导出日志到下载」按钮 | **0.1.7** |
+| 「导出原图（HEIC 无增益图时用）」按钮 | ≥ 0.1.6 |
 | 「保存烘焙图到相册」按钮 | ≥ 0.1.4 |
 | 「复制全部日志」按钮 + 两个图片位 | ≥ 0.1.2 |
 | 只有「用文件管理器选择」多出来，没有图片位 | 0.1.1 |
