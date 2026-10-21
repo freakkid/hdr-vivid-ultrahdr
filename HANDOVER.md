@@ -30,7 +30,8 @@ hdr-vivid-ultrahdr/
 │   ├── 02-verification.md   已验证事实 + 真机排障全过程（§2.7）
 │   ├── 03-toolchain-setup.md 构建环境安装（dl.google.com 不可达方案）
 │   ├── 04-HANDOFF-bake.md   烘焙链路算法决策记录
-│   └── 05-harmonyos-zhuoyitong.md 鸿蒙 NEXT 装 APK（卓易通容器）完整步骤
+│   ├── 05-harmonyos-zhuoyitong.md 鸿蒙 NEXT 装 APK（卓易通容器）完整步骤
+│   └── 06-heic-and-heif.md  HEIC 方案调研与「转 JPG 损耗」结论
 ├── src/android/             ★ Android 实现（交付物）
 ├── src/python/uhdr/         容器参考实现与校验器（工具链，不进 APK）
 ├── src/harmony/, src/ets/   HarmonyOS/ArkTS 链路（骨架，未真机验证）

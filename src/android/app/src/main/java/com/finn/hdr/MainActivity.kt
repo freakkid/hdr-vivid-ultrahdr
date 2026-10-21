@@ -36,10 +36,12 @@ class MainActivity : ComponentActivity() {
 
     // ---- 视图 ----
     private lateinit var logView: TextView
+    private lateinit var logScroll: ScrollView
     private lateinit var infoView: TextView
     private lateinit var previewBefore: ImageView
     private lateinit var previewAfter: ImageView
     private lateinit var shareBaked: Button
+    private lateinit var saveBaked: Button
     private lateinit var shareHdr: Button
     private lateinit var exportButton: Button
     private lateinit var profileSpinner: Spinner
@@ -52,6 +54,9 @@ class MainActivity : ComponentActivity() {
     private var pvGain: Bitmap? = null
     private var bakedFile: File? = null
     private var hdrFile: File? = null
+
+    /** 日志文件：容器里没有 logcat，这是唯一可回溯的记录。 */
+    private val logFile: File by lazy { File(filesDir, "hdr-log.txt") }
 
     /** 预览代次：快速拖动滑杆时丢弃过期结果，避免旧图覆盖新图。 */
     @Volatile
@@ -217,6 +222,13 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { share(hdrFile) }
         }
 
+        // 容器里 ACTION_SEND 常被裁剪，把文件落到系统相册是最稳的出路
+        saveBaked = Button(this).apply {
+            text = "保存烘焙图到相册"
+            isEnabled = false
+            setOnClickListener { saveToGallery(bakedFile) }
+        }
+
         val copyLogButton = Button(this).apply {
             text = "复制全部日志"
             setOnClickListener {
@@ -233,6 +245,7 @@ class MainActivity : ComponentActivity() {
         }
 
         val scroll = ScrollView(this).apply { addView(logView) }
+        logScroll = scroll
 
         root.addView(pickButton)
         root.addView(pickFileButton)
@@ -244,6 +257,7 @@ class MainActivity : ComponentActivity() {
         root.addView(exportButton)
         root.addView(shareBaked)
         root.addView(shareHdr)
+        root.addView(saveBaked)
         root.addView(copyLogButton)
         root.addView(
             scroll,
@@ -265,6 +279,7 @@ class MainActivity : ComponentActivity() {
         runOnUiThread {
             shareBaked.isEnabled = false
             shareHdr.isEnabled = false
+            saveBaked.isEnabled = false
             previewBefore.setImageDrawable(null)
             previewAfter.setImageDrawable(null)
         }
@@ -366,10 +381,7 @@ class MainActivity : ComponentActivity() {
                     "裁切 ${"%.2f".format(stats.clippedRatio * 100)}%  " +
                     "[$profile ${"%.2f".format(strength)}]"
             }
-            appendLog("  预览：${stats.outSize.first}x${stats.outSize.second} " +
-                "峰值=${"%.2f".format(stats.hdrPeak)}x " +
-                "裁切=${"%.2f".format(stats.clippedRatio * 100)}% " +
-                "暗部提升=${"%.2f".format(stats.ltmShadowLift)}x")
+            // 预览不写日志：拖动滑杆会连续触发，写日志会把真正的错误挤出视野。
         } catch (t: Throwable) {
             infoView.text = "预览失败：${t.javaClass.simpleName}"
             appendLog("预览失败\n${describe(t)}")
@@ -437,11 +449,13 @@ class MainActivity : ComponentActivity() {
                 }
 
                 appendLog("[4/4] 完成")
+                pruneExports(dir)
                 runOnUiThread {
                     exportButton.isEnabled = true
                     shareBaked.isEnabled = bakedFile?.exists() == true
                     shareHdr.isEnabled = hdrFile?.exists() == true
-                    infoView.text = "导出完成：${bf.name}（${bakedJpeg.size / 1024} KB）。可直接发微信。"
+                    saveBaked.isEnabled = bakedFile?.exists() == true
+                    infoView.text = "导出完成：${bf.name}（${bakedJpeg.size / 1024} KB）。可保存到相册或用微信发送。"
                 }
             } catch (t: Throwable) {
                 infoView.text = "导出失败：${t.javaClass.simpleName}"
@@ -528,6 +542,52 @@ class MainActivity : ComponentActivity() {
             ?: error("解码失败（sample=$sample, 源=${bounds.outWidth}x${bounds.outHeight}）")
     }
 
+    /** 只保留最近若干份导出，避免 cacheDir 无限增长。 */
+    private fun pruneExports(dir: File, keep: Int = 10) {
+        runCatching {
+            val files = dir.listFiles()?.sortedByDescending { it.lastModified() } ?: return
+            files.drop(keep).forEach { it.delete() }
+        }
+    }
+
+    /**
+     * 保存到系统相册（MediaStore）。
+     * 容器里 `ACTION_SEND` 分享面板经常被裁剪，写进相册是更可靠的一条出路：
+     * 用户可以从相册直接发微信。
+     */
+    private fun saveToGallery(f: File?) {
+        if (f == null || !f.exists()) {
+            infoView.text = "还没有导出的文件，请先点「导出全尺寸」"
+            return
+        }
+        if (android.os.Build.VERSION.SDK_INT < 29) {
+            infoView.text = "系统低于 Android 10，暂不支持直接写相册（请用「发送」按钮）"
+            appendLog("保存到相册已跳过：SDK=${android.os.Build.VERSION.SDK_INT} < 29")
+            return
+        }
+        infoView.text = "保存到相册中…"
+        Thread {
+            try {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, f.name)
+                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
+                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/HDRBake")
+                }
+                val uri = contentResolver.insert(
+                    android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
+                ) ?: error("MediaStore.insert 返回 null")
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    f.inputStream().use { it.copyTo(out) }
+                } ?: error("openOutputStream 返回 null")
+                appendLog("已保存到相册：Pictures/HDRBake/${f.name}")
+                runOnUiThread { infoView.text = "已保存到相册：Pictures/HDRBake/${f.name}" }
+            } catch (t: Throwable) {
+                appendLog("保存到相册失败\n${describe(t)}")
+                runOnUiThread { infoView.text = "保存到相册失败：${t.javaClass.simpleName}（可改用「发送」按钮）" }
+            }
+        }.start()
+    }
+
     private fun share(f: File?) {
         if (f == null) {
             infoView.text = "还没有可发送的文件，请先导出"
@@ -542,8 +602,17 @@ class MainActivity : ComponentActivity() {
 
     private fun say(msg: String) = runOnUiThread { infoView.text = msg }
 
+    /**
+     * 追加日志，并**同步落盘**。
+     *
+     * 为什么必须落盘：容器环境（鸿蒙卓易通）连不上 logcat，一旦 App 被杀或崩溃，
+     * 屏幕上和剪贴板里的内容就全没了。日志文件是唯一可回溯的证据。
+     */
     private fun appendLog(line: String) = runOnUiThread {
         if (logView.text.isNotEmpty()) logView.append("\n")
         logView.append(line)
+        // 自动滚到底：日志多了以后，不滚动的话用户永远停在最上面几行
+        logScroll.post { logScroll.fullScroll(android.view.View.FOCUS_DOWN) }
+        runCatching { logFile.appendText(line + "\n") }
     }
 }

@@ -73,7 +73,8 @@ hdr-vivid-ultrahdr/
 │   ├── 02-verification.md    ← 已验证事实：20 项单测、19 项自检、5 条踩坑记录
 │   ├── 03-toolchain-setup.md ← 构建环境安装（dl.google.com 不可达方案）
 │   ├── 04-HANDOFF-bake.md    ← 烘焙算法决策记录
-│   └── 05-harmonyos-zhuoyitong.md ← 鸿蒙手机装本 APK 的方法（卓易通容器）
+│   ├── 05-harmonyos-zhuoyitong.md ← 鸿蒙手机装本 APK 的方法（卓易通容器）
+│   └── 06-heic-and-heif.md   ← 转 JPG 的损耗、HEIC 为何不支持、行业方案调研
 ├── src/python/uhdr/          ← 可运行参考实现（容器解析 / 组装 / 自检 / 几何变换）
 ├── src/android/              ← 可编译 APK 工程（Kotlin + 可选 JNI），含 gradlew/wrapper，见其 README
 ├── src/ets/                  ← ArkTS 交付骨架（6 个模块）

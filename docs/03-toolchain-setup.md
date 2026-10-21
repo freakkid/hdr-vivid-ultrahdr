@@ -163,3 +163,67 @@ cd src/android
 | `SDK location not found` | local.properties 缺失或转义错误 | 按 3.3-3 重写 |
 | `Unsupported class file major version` | 用了 JDK 21+ 编译 AGP 8.5 | 固定 JDK 17 |
 | Gradle 下载卡住 | services.gradle.org 不可达 | 换腾讯镜像（已默认） |
+
+
+---
+
+## 3.8 hdc（鸿蒙设备调试工具）——替代 adb
+
+鸿蒙设备不认 adb（`adb devices` 永远为空，设备管理器里只有 `HDC Device`），
+要用华为的 **hdc**。能力对等：截屏、日志、推拉文件。
+
+### 3.8.1 获取途径（三条，按推荐度）
+
+| 途径 | 体积 | 说明 |
+|---|---|---|
+| **华为 Command Line Tools** | 2.54 GB | 官方正式版，含完整 SDK + ohpm + hvigor + node。**推荐** |
+| OpenHarmony SDK（华为云镜像） | 2.5 GB | 流式提取只要 toolchains，但版本是 Beta（实测 3.2.0b） |
+| DevEco Studio | 4–8 GB | 只为 hdc 不值得 |
+
+**官方包（推荐）**：`https://developer.huawei.com/consumer/cn/download/` → 搜「Command Line Tools」→ Windows 版。
+下载后结构：
+
+```
+command-line-tools/
+├── bin/
+├── ohpm/ hstack/ tool/
+└── sdk/default/openharmony/toolchains/hdc.exe   ← 就是它
+```
+
+**镜像备用（不登录也能下）**：华为云 `repo.huaweicloud.com` 有 OpenHarmony 全量 SDK。
+tar 里 `linux/` 排在 `windows/` 前面，gzip 不能跳读，所以用**流式提取**，不落 2.5 GB 到磁盘：
+
+```bash
+curl -s "https://repo.huaweicloud.com/openharmony/os/6.0-Release/ohos-sdk-windows_linux-public.tar.gz" \
+  | tar -xz --wildcards "*toolchains-windows*"
+# 得到 windows/toolchains-windows-x64-*.zip，解压后有 toolchains/hdc.exe
+```
+
+实测速度 3.6 MB/s，约 12 分钟；华为下载中心用浏览器下只有 0.04–0.2 MB/s，且会卡死。
+
+### 3.8.2 两个必踩的坑
+
+1. **只拷 `hdc.exe` 单文件会失败**，退出码 127（启动时找不到同目录的 DLL）。
+   必须整个 `toolchains/` 目录一起用。
+2. 下载页混着 `.zip.asc`（1 KB 签名文件），点错下到的不是工具本体。真正的包是几百 MB 到 2.5 GB 的 `.zip`。
+
+### 3.8.3 常用命令
+
+```bash
+hdc -v                                  # 版本
+hdc list targets                        # 设备列表，正常应看到序列号
+hdc shell snapshot_display -f /data/local/tmp/s.jpeg   # 截屏
+hdc file recv /data/local/tmp/s.jpeg .                 # 拉回本地
+hdc shell hilog                         # 系统日志（相当于 logcat）
+hdc file send local.apk /data/local/tmp/               # 推文件
+hdc tconn 192.168.x.x:6666              # 无线连接（需先 hdc tmode port 6666）
+```
+
+### 3.8.4 前置条件
+
+手机需：**解锁屏幕** → 插线 → USB 用途选「传输文件」→ 设置 → 系统 → 开发者选项 → 打开「**USB 调试**」→
+手机上点「允许调试」。缺任何一步，`list targets` 都是 `[Empty]`。
+
+> 附带结论：这套 Command Line Tools 自带 ohpm + hvigor + 完整 SDK，
+> 意味着**构建原生 `.hap` 的工具链已经齐了**，只差华为开发者账号 + 实名 + Profile 绑设备 UDID。
+> 之前「必须装 DevEco Studio」的判断不成立。
