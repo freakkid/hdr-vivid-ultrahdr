@@ -264,7 +264,8 @@ v0.1.6 已针对此改了三件事，一次就能把信息取全（不必再反�
 | 日志特征 | 结论 | 下一步 |
 |---|---|---|
 | 摘要块里 `结论：有增益图（HDR 照片）` | **有增益图** | 值得做 HEIC 增益图提取（§3.5）|
-| 摘要块里 `aux=0 → 没有辅助图，不是 HDR` | 普通 SDR 的 HEIC | 只需支持主图解码，不做增益图 |
+| 摘要块里 `aux=0` 但安装了 v0.1.7+ 后仍显示无增益图 | 可能是「主图本身 HDR 编码」 | **用桌面 `analyze_image.py` 看 `transfer=`**：16=PQ / 18=HLG 即为 HDR，此时不需要增益图，需要 PQ/HLG 逆变换（§3.4 路线 A）|
+| 摘要块里 `aux=0` 且 transfer=13(sRGB) | 普通 SDR 的 HEIC | 只需支持主图解码，不做增益图 |
 | `解码通道：ImageDecoder` 且出图 | 容器有 HEVC 解码器 | 主图路径可行 |
 | `解码通道：none` + `连宽高都读不出` | 容器缺 HEIF 解析器 | 只能靠「导出原图」+ 桌面处理 |
 
@@ -329,6 +330,16 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 需要先把 libultrahdr 编进 APK（`bash scripts/fetch-libultrahdr.sh` + `./gradlew assembleDebug -PwithNative=true`），且 JNI 侧目前只实现了 API-4 与 probe。
 
 ### 3.5 【P2】HEIC（ISOBMFF）容器不支持
+
+> **先分清 HDR 的两种形态，否则会一直找错东西**：
+>
+> | 形态 | 判据 | 处理方式 |
+> |---|---|---|
+> | **增益图型**（大多数手机默认）| 有 `aux`，URN 是 ISO 21496-1 / 厂商 hdrgainmap | SDR 主图 + 增益图，按 hdrgm 公式重建 —— 我们已实现（JPEG 容器）|
+> | **直接编码型** | 无 aux，但 `nclx transfer` = 16(PQ) / 18(HLG)，常配 BT.2020 + 10bit | 主图本身就是 HDR，需要 **PQ/HLG 逆变换 → 线性 → 色调映射**，属 §3.4 路线 A |
+>
+> 桌面 `scripts/analyze_image.py` 已能自动区分这两者并给出结论（v0.1.7 后）。
+> 所以「有没有增益图」不是 HDR 的唯一判据 —— 这点此前一直没说清。
 
 当前只解析 JPEG。若源图是真 HEIC（`ftyp` 开头），不会崩，但会走到「已识别是 HEIC，
 本版不支持解码，结构已列在下方日志」。
