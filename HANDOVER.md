@@ -120,6 +120,17 @@ APK 可构建、Kotlin/Python 双实现数值对照通过、**模拟器端到端
 
 **这是直接决定产品能否对外承诺的部分。**
 
+**代理测试已做**（`tests/wechat_proxy.py`，2026-10-21，无真机下界证据）：
+
+| 路径 | 结果 |
+|---|---|
+| 勾选原图（字节不变） | HDR 完整保留（20/20 PASS）——**只有这条路能承载 Ultra HDR** |
+| 不勾选原图（任何像素重压缩） | XMP/MPF/增益图**全部丢失**（4 种尺寸/质量组合均如此）——下界证据，微信若更狠结果一样 |
+| 烘焙图效果存活率 | 原尺寸 q80：SSIM 0.91；长边 1920：0.90；1440：0.83；1080：0.77——**HDR 观感扛压缩但随降尺寸衰减**，这是烘焙图给非原图路径的答案 |
+
+结论：对外话术必须是「原图路径发 Ultra HDR，普通发送发烘焙图」双轨，
+不能承诺「微信发图直接看 HDR」。真机实测待做（验证微信是否比重压缩更狠/更慈悲）。
+
 ### 3.3 【P2】路线 A：线性光重算
 
 当前走的是路线 B（复用源增益图直接封装），CUVA 源可能存在色偏。路线 A 需要：
@@ -198,6 +209,7 @@ bash tests/ltm_parity/run_parity.sh        # Kotlin/Python LTM 双实现数值�
 python tests/bake_quality_check.py <源.jpg>   # 烘焙画质体检（SSIM/等亮度HF/局部对比，信息性）
 python tests/bake_quality_check.py --selftest # 受控实验：判决 detail_gain 是否生效
 python tests/bake_quality_check.py --eps-sweep # eps 权衡曲线（细节增益 vs 边缘过冲）
+python tests/wechat_proxy.py <file.jpg>      # 微信路径代理测试（元数据存活 + 效果存活率）
 
 # Android 侧
 cd src/android
