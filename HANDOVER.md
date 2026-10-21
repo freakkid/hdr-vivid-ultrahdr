@@ -54,9 +54,9 @@ bash scripts/install_android_toolchain.sh
 # 3) 生成 local.properties（每台机器不同，故意不入库）
 printf 'sdk.dir=C\\:\\\\Users\\\\<你的用户名>\\\\Android\\\\Sdk\n' > src/android/local.properties
 
-# 4) 验证 Python 侧（27 项测试，1 秒）
+# 4) 验证 Python 侧（28 项测试，1 秒）
 ./run.sh test
-python scripts/check_android_project.py     # 工程静态自检 43 项
+python scripts/check_android_project.py     # 工程静态自检 44 项
 
 # 5) 构建 APK
 export JAVA_HOME="$HOME/.workbuddy/binaries/jdk/17"
@@ -113,7 +113,7 @@ Windows 特有坑：Git Bash 会把 `adb shell` 里的 `/sdcard/...` 改写成
 
 ## 2. 基线状态
 
-Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 27 项、静态自检 43 项、
+Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 28 项、静态自检 44 项、
 APK 可构建、Kotlin/Python 双实现数值对照通过、**模拟器端到端实测通过**
 （App 产物经 Python 独立校验 20/20，App 与 Python 烘焙输出 SSIM 0.95，
 细节见 docs/02 §2.8）。**已完成项不在此罗列**——证据在 `git log` 与
@@ -246,11 +246,11 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 
 ```bash
 # Python 侧
-./run.sh test                              # 27 项回归
+./run.sh test                              # 28 项回归
 ./run.sh demo                              # 端到端演示（合成源）
 python -m uhdr.cli inspect  <file>         # 容器结构诊断
 python -m uhdr.cli validate <file>         # 结构自检
-python scripts/check_android_project.py    # Android 工程静态自检（43 项）
+python scripts/check_android_project.py    # Android 工程静态自检（44 项）
 bash tests/ltm_parity/run_parity.sh        # Kotlin/Python LTM 双实现数值对照（需 kotlinc）
 python tests/bake_quality_check.py <源.jpg>   # 烘焙画质体检（SSIM/等亮度HF/局部对比，信息性）
 python tests/bake_quality_check.py --selftest # 受控实验：判决 detail_gain 是否生效
@@ -264,7 +264,7 @@ bash ../../scripts/fetch-libultrahdr.sh                 # 需要 native 时
 ./gradlew assembleDebug -PwithNative=true
 
 # 真机
-adb install -r out/HdrVividUltraHdr-0.1.0-debug.apk
+adb install -r out/HdrVividUltraHdr-0.1.5-debug.apk
 adb exec-out run-as com.finn.hdr cat cache/exports/<file>.jpg > pulled.jpg   # 拉产物
 adb logcat -d -b crash | grep finn                                          # 看崩溃
 

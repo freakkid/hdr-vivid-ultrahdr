@@ -77,7 +77,7 @@ cd src/android
 | 结果 | **BUILD SUCCESSFUL in 32s**（首次 16m33s，含 Gradle 与依赖下载） |
 | 任务 | 35 actionable tasks |
 | 产物 | `app/build/outputs/apk/debug/app-debug.apk`（2.1 MB） |
-| 包名 / 版本 | `com.finn.hdr` / 0.1.0 |
+| 包名 / 版本 | `com.finn.hdr` / 0.1.5 |
 | minSdk / targetSdk | 26 / 34 |
 | 启动 Activity | `com.finn.hdr.MainActivity` |
 | 签名 | Android Debug 证书（SHA-256: `430ea510…`） |
@@ -94,7 +94,7 @@ cd src/android
   src/android/app/build/outputs/apk/debug/app-debug.apk
 ```
 
-也可以直接把 `out/HdrVividUltraHdr-0.1.0-debug.apk` 传到手机点击安装
+也可以直接把 `out/HdrVividUltraHdr-0.1.5-debug.apk` 传到手机点击安装
 （需允许「安装未知来源应用」）。
 
 ### 3.6.1 手机端开启 USB 调试

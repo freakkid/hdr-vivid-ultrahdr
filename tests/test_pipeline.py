@@ -274,3 +274,47 @@ class TestEndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestRoundTrip(unittest.TestCase):
+    """导出后再解析，增益参数必须原样保留。
+
+    回归用例：解析端此前用「主图 XMP」覆盖参数，而主图按设计只写
+    hdrgm:Version 占位，导致 4.43x 静默退化为默认 4.00x。
+    """
+
+    def test_export_then_parse_keeps_gain(self):
+        import os
+        import tempfile
+
+        from uhdr import pipeline, vivid_source
+
+        # 用一个非默认值，才能区分「读到了真参数」还是「回退默认 2.0」
+        want = 2.148
+        data = synthetic.make_cuva_sample(640)
+
+        with tempfile.TemporaryDirectory() as d:
+            src_path = os.path.join(d, "src.jpg")
+            with open(src_path, "wb") as f:
+                f.write(data)
+            out = os.path.join(d, "rt.jpg")
+            res = pipeline.export(
+                src_path, out,
+                pipeline.ExportOptions(long_edge=512, gain_map_max_log2=want),
+            )
+            self.assertTrue(res.ok, "导出失败")
+
+            again = vivid_source.parse_file(out)
+            self.assertIsNotNone(again.meta, "回读没有得到增益参数")
+            self.assertAlmostEqual(
+                again.meta.gain_map_max, want, places=2,
+                msg=f"往返后增益上限变化: {want:.4f} -> {again.meta.gain_map_max:.4f}",
+            )
+            self.assertTrue(
+                any("增益图" in n for n in again.notes),
+                f"参数来源未标注为增益图: {again.notes}",
+            )
+
+
+if __name__ == "__main__":
+    unittest.main()

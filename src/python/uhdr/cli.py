@@ -76,6 +76,7 @@ def cmd_bake(args: argparse.Namespace) -> int:
         profile=args.profile,
         strength=args.strength,
         quality=args.quality,
+        anchor=args.anchor,          # 此前解析了却没传，--anchor peak 静默无效
     )
     src = vivid_source.parse_file(args.src)
     print(src.describe())

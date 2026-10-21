@@ -85,6 +85,8 @@ def main() -> int:
         src = f.read_text(encoding="utf-8")
         # 去掉字符串与注释后统计括号（粗粒度但足够发现漏写右括号）
         stripped = re.sub(r'"""[\s\S]*?"""', '""', src)
+        # 先剥字符字面量：`'"'` 这种会让下面的字符串正则跨行吞掉整段代码
+        stripped = re.sub(r"'(?:\\.|[^'\\])'", "'_'", stripped)
         stripped = re.sub(r'"(?:\\.|[^"\\])*"', '""', stripped)
         stripped = re.sub(r"//[^\n]*", "", stripped)
         stripped = re.sub(r"/\*[\s\S]*?\*/", "", stripped)

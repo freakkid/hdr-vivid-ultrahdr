@@ -59,7 +59,7 @@ Android 源码目录较深（`src/android/app/src/main/java/com/finn/hdr/`），
    实现由两套独立代码互证——真机产物拉回桌面跑 `uhdr.cli validate`，是唯一的外部证据。
 2. **桌面取证**：真机上「增益图不见了」这类问题，必须把文件拉下来逐段拆（本次就是靠它
    定位到 ISO 21496-1 载体缺失 + Kotlin 的 `pos+3` 边界 bug）。
-3. **快速回归**：Python 27 项测试 1.6 秒，Android 构建 20–60 秒，反馈速度差一个量级。
+3. **快速回归**：Python 28 项测试 1.6 秒，Android 构建 20–60 秒，反馈速度差一个量级。
 
 如果你只需要 App、不打算维护桌面工具链，见文末「收敛为纯安卓项目」。
 
@@ -81,7 +81,7 @@ hdr-vivid-ultrahdr/
 ├── src/harmony/              ← HarmonyOS 另版实现（Picture/GAINMAP 读取 + 导出编排）
 ├── web/index.html            ← 网页版原型（未完成，已冻结，勿当产物使用）
 ├── scripts/
-│   ├── check_android_project.py  ← 无 SDK 也能跑的工程静态自检（40 项）
+│   ├── check_android_project.py  ← 无 SDK 也能跑的工程静态自检（44 项）
 │   └── fetch-libultrahdr.sh      ← 拉取第三方库（仅 native 路线需要）
 ├── tests/
 │   ├── test_pipeline.py    ← 20 项回归测试（含 3 项负向）
@@ -94,9 +94,15 @@ hdr-vivid-ultrahdr/
 
 ## 快速开始
 
+> 下面两种写法等价：`./run.sh <子命令>` 会替你设好 `PYTHONPATH`；
+> 若直接用 `python -m uhdr.cli`，**必须先 `export PYTHONPATH=src/python`**，
+> 否则报 `ModuleNotFoundError: No module named 'uhdr'`。
+
 ```bash
-# 端到端演示：合成 CUVA 源 → 导出 → 17 项自检
-python -m uhdr.cli demo --root .
+export PYTHONPATH=src/python          # 或统一用 ./run.sh
+
+# 端到端演示：合成 CUVA 源 → 导出 → 20 项自检
+./run.sh demo
 
 # 诊断任意 JPEG（是否含增益图、容器类型、元数据完整性）
 python -m uhdr.cli inspect path/to/photo.jpg
@@ -107,10 +113,10 @@ python -m uhdr.cli export path/to/photo.jpg -o out/photo.hdr.jpg --long-edge 204
 # 自检
 python -m uhdr.cli validate out/photo.hdr.jpg
 
-# 回归测试
-python -m unittest discover -s tests -v
+# 回归测试（28 项）
+./run.sh test
 
-# Android 工程静态自检（不需要 Android SDK，40 项）
+# Android 工程静态自检（不需要 Android SDK，44 项）
 python scripts/check_android_project.py
 ```
 
@@ -124,7 +130,7 @@ Python 依赖仅 `Pillow`（用于像素采样）。运行环境建议使用隔�
 | XMP / MPF 构造与解析（含增益图侧双写） | 已实现，往返测试通过 |
 | 增益图同步缩放 / 裁剪 / 旋转 | 已实现，比例断言通过 |
 | 端到端导出 + 自检 | 通过（19 项全 PASS） |
-| Android 工程骨架（Gradle/Manifest/Activity/Wrapper） | 已补齐，静态自检 40 项通过；**BUILD SUCCESSFUL，APK 2.1 MB** |
+| Android 工程骨架（Gradle/Manifest/Activity/Wrapper） | 已补齐，静态自检 44 项通过；**BUILD SUCCESSFUL，APK 2.1 MB** |
 | 构建环境（JDK 17 + SDK 34 + Gradle 8.7） | 已在本机安装并验证，镜像方案见 `docs/03-toolchain-setup.md` |
 | CI 云端出包（GitHub Actions） | 已配置，推送后可直接下载 APK |
 | 纯 Kotlin 封装器（无 NDK 也能跑路线 B） | 已完成，可在任意 Android Studio 环境编出 APK |

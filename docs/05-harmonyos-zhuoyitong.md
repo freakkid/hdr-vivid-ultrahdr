@@ -24,7 +24,9 @@
 
 ## 3. 把 APK 送到手机（三条通道，任选）
 
-APK 在本仓库 `out/HdrVividUltraHdr-0.1.0-debug.apk`（约 2.2 MB）。
+APK **不在仓库里**（`.gitignore` 排除了 `*.apk`），需本地构建：
+`cd src/android && ./gradlew assembleDebug`，产物在
+`out/HdrVividUltraHdr-0.1.5-debug.apk`（约 2.2 MB）。
 
 ### 3.1 微信（最省事）
 

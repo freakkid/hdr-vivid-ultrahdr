@@ -58,9 +58,11 @@ class MainActivity : ComponentActivity() {
     /** 日志文件：容器里没有 logcat，这是唯一可回溯的记录。 */
     private val logFile: File by lazy { File(filesDir, "hdr-log.txt") }
 
-    /** 预览代次：快速拖动滑杆时丢弃过期结果，避免旧图覆盖新图。 */
-    @Volatile
-    private var previewGen = 0
+    /**
+     * 预览代次：快速拖动滑杆时丢弃过期结果，避免旧图覆盖新图。
+     * 必须是原子自增——`@Volatile Int` 的 `++` 是读改写，并发下两个线程会拿到同一个代次。
+     */
+    private val previewGen = java.util.concurrent.atomic.AtomicInteger(0)
 
     private val previewEdge = 720     // 预览长边，够看清效果又不吃内存
     private val exportEdge = 2048     // 导出长边（与桌面 Python 默认一致）
@@ -275,6 +277,8 @@ class MainActivity : ComponentActivity() {
         appendLog("\n===== 载入 ${uri.scheme}://${uri.authority} =====")
         bakedFile = null
         hdrFile = null
+        previewGen.incrementAndGet()   // 作废上一张图残留的预览任务
+        previewHandler.removeCallbacks(previewTask)
         exportButton.isEnabled = false
         runOnUiThread {
             shareBaked.isEnabled = false
@@ -297,7 +301,7 @@ class MainActivity : ComponentActivity() {
                     // 不解码，先把结构读出来：有没有 aux、URN 叫什么，直接决定后续路线
                     appendLog("这是 HEIC/HEIF，当前版本不解码。结构如下：")
                     appendLog(HeifInspector.describe(rawBytes))
-                    infoView.text = "这是 HEIC（鸿蒙相机可能默认此格式），本版不支持解码。结构已列在下方日志，请复制发我。"
+                    say("这是 HEIC（鸿蒙相机可能默认此格式），本版不支持解码。结构已列在下方日志。")
                     appendLog("→ 请点下方「复制全部日志」把上面结构发我，据此判断是否值得做 HEIC 支持。")
                     return@Thread
                 }
@@ -309,7 +313,7 @@ class MainActivity : ComponentActivity() {
                 src.notes.forEach { appendLog("· $it") }
 
                 if (!src.hasGainMap) {
-                    infoView.text = "这张图没有增益图 —— 它是普通 SDR，不需要转换。"
+                    say("这张图没有增益图 —— 它是普通 SDR，不需要转换。")
                     appendLog("→ 无增益图，停止。请选一张 HDR 照片（相机需开启 HDR Vivid / HDR 照片）。")
                     runOnUiThread {
                         try {
@@ -341,7 +345,7 @@ class MainActivity : ComponentActivity() {
                 appendLog("[5/5] 就绪：拖滑杆/换档位会即时重算预览；满意后点「导出全尺寸」。")
             } catch (t: Throwable) {
                 parsed = null
-                infoView.text = "载入失败：${t.javaClass.simpleName}"
+                say("载入失败：${t.javaClass.simpleName}")
                 appendLog(describe(t))
             }
         }.start()
@@ -351,10 +355,18 @@ class MainActivity : ComponentActivity() {
     // 预览
     // =====================================================================
 
+    private val previewHandler = android.os.Handler(android.os.Looper.getMainLooper())
+    private val previewTask = Runnable { Thread { renderPreviewNow() }.start() }
+
+    /**
+     * 防抖后再重算预览。
+     * 滑杆从 0.30 拖到 1.00 会触发约 70 次回调，逐次起线程会让 70 个 bake 并发抢 CPU，
+     * 每个都变慢、内存叠加，还拖着主线程处理 70 条日志。
+     */
     private fun schedulePreview(reason: String) {
         if (pvBase == null || pvGain == null) return
-        appendLog("[预览] $reason → ${curProfile()} / ${"%.2f".format(curStrength())}")
-        Thread { renderPreviewNow() }.start()
+        previewHandler.removeCallbacks(previewTask)
+        previewHandler.postDelayed(previewTask, 160)
     }
 
     /** 必须在后台线程调用。 */
@@ -362,7 +374,7 @@ class MainActivity : ComponentActivity() {
         val base = pvBase ?: return
         val gain = pvGain ?: return
         val src = parsed ?: return
-        val gen = ++previewGen
+        val gen = previewGen.incrementAndGet()
         val profile = curProfile()
         val strength = curStrength()
         try {
@@ -370,11 +382,15 @@ class MainActivity : ComponentActivity() {
                 base, gain, src.meta,
                 HdrBaker.Options(profile = profile, strength = strength),
             )
-            if (gen != previewGen) {          // 已有更新的请求，丢弃本次
+            if (gen != previewGen.get()) {    // 已有更新的请求，丢弃本次
                 baked.recycle()
                 return
             }
             runOnUiThread {
+                if (gen != previewGen.get()) {   // 入队期间又被更新的请求超过
+                    baked.recycle()
+                    return@runOnUiThread
+                }
                 previewAfter.setImageBitmap(baked)
                 infoView.text = "预览 ${stats.outSize.first}x${stats.outSize.second}  " +
                     "峰值 ${"%.2f".format(stats.hdrPeak)}x  " +
@@ -383,7 +399,7 @@ class MainActivity : ComponentActivity() {
             }
             // 预览不写日志：拖动滑杆会连续触发，写日志会把真正的错误挤出视野。
         } catch (t: Throwable) {
-            infoView.text = "预览失败：${t.javaClass.simpleName}"
+            say("预览失败：${t.javaClass.simpleName}")
             appendLog("预览失败\n${describe(t)}")
         }
     }
@@ -395,6 +411,11 @@ class MainActivity : ComponentActivity() {
     private fun exportFull() {
         val src = parsed ?: return
         if (!src.hasGainMap) return
+        // 必须在主线程快照：导出线程里读 Spinner/SeekBar 会与用户操作并发，
+        // 且一次导出内读三次，打印的参数可能和实际执行的不一致
+        val profile = curProfile()
+        val strength = curStrength()
+        previewGen.incrementAndGet()   // 导出期间不再接受预览结果
         exportButton.isEnabled = false
         infoView.text = "导出中…"
 
@@ -412,17 +433,17 @@ class MainActivity : ComponentActivity() {
                 appendLog("[2/4] 烘焙")
                 val (baked, stats) = HdrBaker.bake(
                     base, gain, src.meta,
-                    HdrBaker.Options(profile = curProfile(), strength = curStrength()),
+                    HdrBaker.Options(profile = profile, strength = strength),
                 )
                 appendLog("尺寸 ${stats.outSize.first}x${stats.outSize.second}  " +
                     "峰值 ${"%.2f".format(stats.hdrPeak)}x  白点 ${"%.2f".format(stats.whitePoint)}  " +
                     "最大 boost ${"%.2f".format(stats.maxBoost)}x  裁切 ${"%.2f".format(stats.clippedRatio * 100)}%")
-                if (curProfile() != "off") {
+                if (profile != "off") {
                     appendLog("LTM 半径=${stats.ltmRadiusPx}px  detail=${"%.2f".format(stats.ltmDetailGain)}  " +
                         "暗部提升=${"%.2f".format(stats.ltmShadowLift)}x")
                 }
 
-                val quality = if (curProfile() == "wechat") 88 else 95
+                val quality = if (profile == "wechat") 88 else 95
                 val bos = ByteArrayOutputStream()
                 baked.compress(Bitmap.CompressFormat.JPEG, quality, bos)
                 val bakedJpeg = bos.toByteArray()
@@ -458,7 +479,7 @@ class MainActivity : ComponentActivity() {
                     infoView.text = "导出完成：${bf.name}（${bakedJpeg.size / 1024} KB）。可保存到相册或用微信发送。"
                 }
             } catch (t: Throwable) {
-                infoView.text = "导出失败：${t.javaClass.simpleName}"
+                say("导出失败：${t.javaClass.simpleName}")
                 appendLog(describe(t))
                 runOnUiThread { exportButton.isEnabled = true }
             }

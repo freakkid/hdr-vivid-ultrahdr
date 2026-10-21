@@ -1,3 +1,9 @@
+> **⚠ 2026-10-21 现状更正（以此为准）**
+> 本文是实现前的方案论证。实际实现（`src/android/`，纯 Kotlin）采用**路线 B**：
+> 复用源增益图直接封装，不做线性光重算；微信原图路径已由代理测试验证字节透传。
+> 「MVP 只走路线 A」「微信保留 HDR 不可保证」等表述**已被实测推翻**，
+> 详见 `HANDOVER.md` 与 `docs/02-verification.md`。
+
 # 01 — HDR Vivid 静图 → 带增益图的 SDR JPEG（Ultra HDR）技术方案
 
 版本：v1.0 ｜ 日期：2026-10-20 ｜ 状态：待评审
@@ -643,7 +649,7 @@ export function advise(platform: Platform, v: ValidationReport): ShareAdvice {
 | ID | 风险 | 概率 | 影响 | 兜底 |
 |---|---|---|---|---|
 | T1 | 华为不同 ROM/机型导出的 Vivid 图结构不一致，M1 解析失败 | 中 | 高 | 多机型样本库 + 失败即降级纯 SDR 导出，并上报容器结构摘要（不含隐私） |
-| T2 | Vivid 增益图语义与 hdrgm 不等价，路线 B 出现整体偏亮/偏灰 | 高 | 高 | **MVP 只走路线 A**；B 必须过逐机型校准表后才启用 |
+| T2 | Vivid 增益图语义与 hdrgm 不等价，路线 B 出现整体偏亮/偏灰 | 高 | 高 | **实际 MVP 走路线 B**（复用源增益图直接封装）；路线 A 列为 P2；B 必须过逐机型校准表后才启用 |
 | T3 | tone map 参数不适配导致 SDR 端过曝 | 中 | 高 | AC-1 硬门禁；参数按场景亮度自适应；保留"手动选择保守/鲜艳"两档 |
 | T4 | MPF/XMP 字节写错，部分解码器崩溃或忽略 | 中 | 高 | 不自研 encoder；validator + libultrahdr 回读交叉验证；灰度发布 |
 | T5 | 增益图压缩过度产生 banding，HDR 端出现色阶 | 中 | 中 | 增益图 quality ≥ 85；必要时升到 1/2 分辨率 |

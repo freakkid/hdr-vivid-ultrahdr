@@ -35,6 +35,20 @@ class UltraHdrExporter {
         val warnings: MutableList<String> = mutableListOf(),
     )
 
+    /** 按目标长边采样解码，避免全分辨率解码耗尽内存。 */
+    private fun decodeScaled(bytes: ByteArray, targetLong: Int): Bitmap? {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+        var sample = 1
+        while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= targetLong) sample *= 2
+        val opt = BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opt)
+    }
+
     fun export(src: HdrSourceParser.HdrSource, opt: Options = Options()): Result {
         val steps = mutableListOf<String>()
         val warnings = mutableListOf<String>()
@@ -43,11 +57,13 @@ class UltraHdrExporter {
             return Result(null, false, null, steps, mutableListOf("源图无增益图，无法生成 Ultra HDR"))
         }
 
-        val base0 = BitmapFactory.decodeByteArray(src.sdrJpeg, 0, src.sdrJpeg.size)
+        // 按目标长边采样解码。原实现直接解全分辨率：5760×4320 ARGB_8888 ≈ 99 MB，
+        // 主图+增益图+resize 结果叠起来，容器 256 MB 堆必 OOM。
+        val base0 = decodeScaled(src.sdrJpeg, opt.longEdge)
             ?: return Result(null, false, null, steps, mutableListOf("主图解码失败"))
-        val gm0 = BitmapFactory.decodeByteArray(src.gainMapJpeg!!, 0, src.gainMapJpeg.size)
+        val gm0 = decodeScaled(src.gainMapJpeg!!, opt.longEdge)
             ?: return Result(null, false, null, steps, mutableListOf("增益图解码失败"))
-        steps += "decode: base=${base0.width}x${base0.height} gm=${gm0.width}x${gm0.height}"
+        steps += "decode(sampled): base=${base0.width}x${base0.height} gm=${gm0.width}x${gm0.height}"
 
         val geo0 = GainMapGeometry.requireConsistent(base0, gm0)
         steps += "geometry(source): $geo0"
@@ -56,7 +72,11 @@ class UltraHdrExporter {
         steps += "resize: base=${t.base.width}x${t.base.height} gm=${t.gainMap.width}x${t.gainMap.height}"
         warnings += t.plan.warnings
 
-        val baseJpeg = compress(base0.let { t.base }, opt.baseQuality)
+        // resize 在“无需缩放”时会返回同一个对象，回收前必须判是否是同一实例
+        if (t.base !== base0) base0.recycle()
+        if (t.gainMap !== gm0) gm0.recycle()
+
+        val baseJpeg = compress(t.base, opt.baseQuality)
         val gmJpeg = compressGray(t.gainMap, opt.gainMapQuality)
         steps += "encode: base=${baseJpeg.size}B q=${opt.baseQuality} gm=${gmJpeg.size}B q=${opt.gainMapQuality}"
 

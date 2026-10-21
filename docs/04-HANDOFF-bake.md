@@ -380,7 +380,7 @@ Kotlin 同步修改）。执行后验证：
 | 受控 selftest | local/off 细节增益 0.888 → **1.085**（detail_gain 生效，退出码 0） |
 | 真实样张三档 | local 的 lc4 0.862 → **1.000**（追平源图），比 off 高 +4.7%，HF 比 0.920 与 off 的 0.924 持平 |
 | Kotlin/Python 双实现对照 | PASS，且浮点级吻合度提高约 20 倍（max_abs 8e-4 → 4.3e-5，eps 调大后 var/(var+eps) 病态条件缓解） |
-| 回归 / 静态自检 / APK | 27 项 OK、43/43、BUILD SUCCESSFUL |
+| 回归 / 静态自检 / APK | 28 项 OK、44/44、BUILD SUCCESSFUL |
 
 **遗留**：新 eps 的视觉效果未经真机目视（HANDOVER §3.2）；合成最坏情况过冲
 （~15% 台阶高）记入参数注释，若真机出现可见亮边需回调至 0.1。

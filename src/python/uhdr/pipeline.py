@@ -78,18 +78,23 @@ def _normalize_exif_orientation(img: Image.Image, gm: Image.Image, raw_exif: byt
         return img, gm, raw_exif, 0
     orientation = ex.get(0x0112, 1)
     applied = 0
-    if orientation in (2, 4, 5, 7):          # 含镜像，需人工确认，避免误处理
-        pass
+    normalized = True
+    if orientation in (2, 4, 5, 7):
+        # 含镜像，未实现；**不要把 0x0112 清成 1**——那等于宣称已归一化，
+        # 会同时丢掉镜像与方向信息，比原样保留更糟。
+        normalized = False
     elif orientation == 3:
         img, gm, _ = gainmap_ops.rotate_pair(img, gm, 180)
         applied = 180
     elif orientation == 6:
-        img, gm, _ = gainmap_ops.rotate_pair(img, gm, 90)
-        applied = 90
-    elif orientation == 8:
+        # EXIF 6 = 显示时顺时针转 90°；PIL rotate 是逆时针，所以要用 270
         img, gm, _ = gainmap_ops.rotate_pair(img, gm, 270)
         applied = 270
-    if orientation != 1:
+    elif orientation == 8:
+        # EXIF 8 = 显示时逆时针转 90°（等价顺时针 270°）；PIL 用 90
+        img, gm, _ = gainmap_ops.rotate_pair(img, gm, 90)
+        applied = 90
+    if orientation != 1 and normalized:
         ex[0x0112] = 1
         raw_exif = ex.tobytes()
     return img, gm, raw_exif, applied

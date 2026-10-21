@@ -53,18 +53,26 @@ def _parse_exif_make(data: bytes) -> str | None:
         tiff = payload[6:]
         if len(tiff) < 8:
             return None
+        # int.from_bytes 只接受 "little"/"big"，此前传的是 "<"/">" 会抛 ValueError，
+        # 被下面的 except 吞掉 → 对所有文件都返回 None（函数整体失效）
         little = tiff[:2] == b"II"
-        endian = "<" if little else ">"
-        ifd_off = int.from_bytes(tiff[4:8], "little" if little else "big")
+        order = "little" if little else "big"
+        ifd_off = int.from_bytes(tiff[4:8], order)
         try:
-            count = int.from_bytes(tiff[ifd_off:ifd_off + 2], endian)
+            if ifd_off + 2 > len(tiff):
+                return None
+            count = int.from_bytes(tiff[ifd_off:ifd_off + 2], order)
             for i in range(count):
                 base = ifd_off + 2 + i * 12
-                tag = int.from_bytes(tiff[base:base + 2], endian)
+                if base + 12 > len(tiff):
+                    return None
+                tag = int.from_bytes(tiff[base:base + 2], order)
                 if tag != 0x010F:
                     continue
-                cnt = int.from_bytes(tiff[base + 4:base + 8], endian)
-                voff = int.from_bytes(tiff[base + 8:base + 12], endian)
+                cnt = int.from_bytes(tiff[base + 4:base + 8], order)
+                voff = int.from_bytes(tiff[base + 8:base + 12], order)
+                if voff + cnt > len(tiff):
+                    return None
                 return tiff[voff:voff + cnt].decode("ascii", errors="ignore").strip("\x00 ")
         except Exception:  # noqa: BLE001
             return None
@@ -138,6 +146,28 @@ def _iso_to_hdrgm(iso: iso21496.IsoGainMapMeta) -> xmp.GainMapMeta:
     )
 
 
+def _has_real_gain(raw: dict | None) -> bool:
+    """主图 XMP 是否带真实增益参数（而非只有 Version 占位）。"""
+    if not raw:
+        return False
+    return any(k in raw for k in ("GainMapMax", "GainMapMin", "HDRCapacityMax"))
+
+
+def _meta_from_gainmap_xmp(data: bytes, start: int, end: int):
+    """从增益图自身的 XMP APP1 里取 hdrgm 参数；没有则返回 None。"""
+    for seg in jpegseg.header_segments_of(data, start, end):
+        if seg.marker != 0xFFE1:
+            continue
+        payload = data[seg.payload_start:seg.payload_end]
+        if not payload.startswith(xmp.XMP_APP1_SIG):
+            continue
+        txt = payload[len(xmp.XMP_APP1_SIG):].decode("utf-8", "replace")
+        _dir, raw = xmp.parse_xmp(txt)
+        if _has_real_gain(raw):
+            return xmp.meta_from_dict(raw)
+    return None
+
+
 def parse_hdr_source(data: bytes, path: str = "<memory>") -> HdrSource:
     images = jpegseg.find_all_images(data)
     notes: list[str] = []
@@ -176,9 +206,15 @@ def parse_hdr_source(data: bytes, path: str = "<memory>") -> HdrSource:
         if scan.xmp_seg is not None:
             txt = data[scan.xmp_seg.payload_start + len(xmp.XMP_APP1_SIG):scan.xmp_seg.payload_end].decode("utf-8", "replace")
             _dir, raw = xmp.parse_xmp(txt)
-            if raw:
+            # 只有主图 XMP 里**确实带增益参数**才允许覆盖 ISO 值。
+            # 我们自己导出的文件主图 XMP 只写 hdrgm:Version（完整参数在增益图侧），
+            # 此前用 `if raw:` 判空，会拿全默认值(2.0)覆盖掉刚解出的 2.148。
+            has_real_gain = _has_real_gain(raw)
+            if has_real_gain:
                 meta = xmp.meta_from_dict(raw)
-                notes.append("同时存在 XMP，hdrgm 参数优先采用 XMP")
+                notes.append("主图 XMP 含增益参数，优先采用 XMP")
+            elif raw:
+                notes.append("主图 XMP 仅有版本信息，增益参数仍取自 ISO 21496-1")
         if meta is None:
             meta = _iso_to_hdrgm(iso_meta)
             notes.append("增益参数由 ISO 21496-1 换算为 hdrgm（log2 域）")
@@ -191,9 +227,18 @@ def parse_hdr_source(data: bytes, path: str = "<memory>") -> HdrSource:
         txt = data[scan.xmp_seg.payload_start + len(xmp.XMP_APP1_SIG):scan.xmp_seg.payload_end].decode("utf-8", "replace")
         directory, raw = xmp.parse_xmp(txt)
         if directory.by_semantic(xmp.SEMANTIC_GAINMAP):
-            meta = xmp.meta_from_dict(raw) if raw else None
-            if meta is None:
-                notes.append("XMP 缺少 hdrgm 参数，回退默认值")
+            # hdrgm 的**完整参数应优先取自增益图自身的 XMP**；
+            # 主图 XMP 按设计只写 hdrgm:Version（占位）。
+            # 此前直接用主图 XMP 的 raw 覆盖，得到的是全默认值(max=2.0)，
+            # 导致「导出 → 再解析」时 4.43x 静默退化为 4.00x。
+            meta = _meta_from_gainmap_xmp(data, gm_start, gm_end)
+            if meta is not None:
+                notes.append("hdrgm 参数取自增益图自身 XMP")
+            elif _has_real_gain(raw):
+                meta = xmp.meta_from_dict(raw)
+                notes.append("增益图无 hdrgm，改用主图 XMP 参数")
+            else:
+                notes.append("增益图与主图 XMP 均无完整 hdrgm，回退默认值")
             return HdrSource(path, "iso_ultrahdr", primary, gainmap_raw, meta, exif_make,
                              notes=notes)
 
