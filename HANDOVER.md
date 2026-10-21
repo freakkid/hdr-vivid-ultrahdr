@@ -64,7 +64,12 @@ cd src/android && ./gradlew assembleDebug --no-daemon
 
 如果新机器能正常访问 Google，直接装 Android Studio 更省事，无需上面的手工流程。
 
-### 1.3 本机（2026-10-21，macOS）实际环境——已验证可用
+### 1.3 两台机器的实际环境——均已验证可用
+
+> 用户在两台机器上交替工作，环境不通用：`local.properties`、JDK/SDK 路径、
+> `out/visual/` 都各自独立。换机器第一件事是跑 §1.2 第 3 步重建 `local.properties`。
+
+**A. macOS（2026-10-21）**
 
 | 组件 | 位置 / 版本 | 备注 |
 |---|---|---|
@@ -78,6 +83,24 @@ export JAVA_HOME=/opt/homebrew/opt/openjdk@17
 export ANDROID_HOME=~/Library/Android/sdk
 cd src/android && bash gradlew assembleDebug --no-daemon   # gradlew 无可执行位，用 bash 调
 ```
+
+**B. Windows（2026-10-21 22:38 实测拉取后重跑通过）**
+
+| 组件 | 位置 / 版本 | 备注 |
+|---|---|---|
+| JDK 17 | `C:/Users/ugnam/.workbuddy/binaries/jdk/17`（17.0.20.1） | `scripts/install_android_toolchain.sh` 装的 |
+| Android SDK | `C:/Users/ugnam/Android/Sdk`（platform 34 / build-tools 34.0.0 / platform-tools 37.0.1） | `dl.google.com` 不可达，走腾讯镜像手工铺目录 |
+| Gradle | wrapper 8.7（腾讯镜像） | 增量构建 38 秒 |
+| Python venv | `C:/Users/ugnam/.workbuddy/binaries/python/envs/default/Scripts/python.exe` | pillow + numpy 均可用 |
+
+```bash
+export JAVA_HOME="C:/Users/ugnam/.workbuddy/binaries/jdk/17"
+export ANDROID_HOME="C:/Users/ugnam/Android/Sdk"
+cd src/android && ./gradlew assembleDebug --no-daemon     # Windows 上可执行位有效
+```
+
+Windows 特有坑：Git Bash 会把 `adb shell` 里的 `/sdcard/...` 改写成
+`…PortableGit/sdcard/…`，必须加 `MSYS_NO_PATHCONV=1`（见 §5.1）。
 
 双实现数值对照（需 kotlinc，见 `tests/ltm_parity/run_parity.sh`）：
 `bash tests/ltm_parity/run_parity.sh`（kotlinc 缺失时自动跳过，不算失败）。
@@ -110,9 +133,16 @@ APK 可构建、Kotlin/Python 双实现数值对照通过、**模拟器端到端
 
 获取途径：另一台华为设备（Mate 40/P50 之后）、或在网上找 `.jpg` 格式的 Vivid 样张。
 
-**目视材料已备好**（`out/visual/`，gitignored）：`app_local.jpg`（模拟器实跑产物）、
-`py_off/local/wechat.jpg`（Python 同参三档）。在 Mac 上直接打开即可开始看，
-不用等设备。HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
+**目视材料不在仓库里**（`out/visual/` 被 gitignore，含真实照片）。换机器后自己生成一次：
+
+```bash
+python scripts/make_visual_compare.py <源图>       # 默认输出到 out/visual/
+```
+
+产出 `source_sdr.jpg`（对照组）/ `py_off|local|wechat.jpg`（三档）/
+`00_compare.jpg`（2×2 拼图，带体积与暗部/高光标注）/ `00_preview.jpg`（缩略）。
+若手上有模拟器实跑产物，另存为 `out/visual/app_local.jpg` 一并对照。
+HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 
 ### 3.2 【P1】微信三路径实测
 
@@ -175,6 +205,7 @@ APK 可构建、Kotlin/Python 双实现数值对照通过、**模拟器端到端
 | `local.properties` 转义 | `SDK location not found` | `sdk.dir=C\:\\Users\\...\\Android\\Sdk` |
 | 模拟器 Photo Picker 不显示 push 的文件 | picker 显示 "No photos or videos" | Picker 只认媒体库：push 后还需 `content insert` 插一条 MediaStore 记录（命令见 docs/02 §2.8）；picker 已打开时不刷新，需 BACK 关掉重开 |
 | `gradlew` 无可执行位 | `permission denied: ./gradlew` | 用 `bash gradlew` 调 |
+| Git Bash 改写 adb 路径 | `adb shell ls /sdcard/` 报 `…/PortableGit/sdcard: No such file` | 命令前加 `MSYS_NO_PATHCONV=1`（Windows 专属） |
 
 ### 5.2 真机（华为 Mate 30 / EMUI）
 
