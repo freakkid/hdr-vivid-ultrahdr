@@ -56,6 +56,77 @@ object HeifInspector {
     private fun firstChild(b: ByteArray, box: Box, offset: Int, type: String): Box? =
         child(b, box, offset).firstOrNull { it.type == type }
 
+
+    /**
+     * 解析 iloc（item location），输出「item id → 总字节数」。
+     *
+     * iloc 是判断"增益图到底在不在"的唯一可靠依据：auxC 只说明声明了辅助图，
+     * 但数据可能在 mdat 里根本不存在。任何越界/异常都不抛，返回 "解析失败"。
+     */
+    private fun describeIloc(b: ByteArray, iloc: Box): String {
+        return try {
+            val limit = minOf(iloc.start + iloc.size, b.size)
+            var p = iloc.payloadStart
+            val ver = b[p].toInt() and 0xFF
+            p += 4                                   // version + flags
+            val b0 = b[p].toInt() and 0xFF
+            val b1 = b[p + 1].toInt() and 0xFF
+            p += 2
+            val offsetSize = (b0 ushr 4) and 0x0F
+            val lengthSize = b0 and 0x0F
+            val baseOffsetSize = (b1 ushr 4) and 0x0F
+            val count = if (ver < 2) {
+                val c = ((b[p].toInt() and 0xFF) shl 8) or (b[p + 1].toInt() and 0xFF)
+                p += 2; c
+            } else {
+                val c = u32(b, p).toInt()
+                p += 4; c
+            }
+            val out = ArrayList<String>()
+            var i = 0
+            while (i < count && p < limit) {
+                val id: Long = if (ver < 2) {
+                    val v = ((b[p].toLong() and 0xFF) shl 8) or (b[p + 1].toLong() and 0xFF)
+                    p += 2; v
+                } else {
+                    val v = u32(b, p); p += 4; v
+                }
+                if (ver >= 1) p += 2                  // construction_method
+                p += 2                                // data_reference_index
+                p += baseOffsetSize
+                val extentCount = ((b[p].toInt() and 0xFF) shl 8) or (b[p + 1].toInt() and 0xFF)
+                p += 2
+                var total = 0L
+                var j = 0
+                while (j < extentCount && p + offsetSize + lengthSize <= limit) {
+                    p += offsetSize
+                    total += readN(b, p, lengthSize.toLong())
+                    p += lengthSize
+                    j++
+                }
+                out.add("#$id=" + fmtSize(total))
+                i++
+                if (out.size >= 24) break
+            }
+            if (out.isEmpty()) "无可读条目" else out.joinToString(" ")
+        } catch (t: Throwable) {
+            "解析失败（${t.javaClass.simpleName}）"
+        }
+    }
+
+    /** 按字节数读大端整数，len 可能为 4 或 8。 */
+    private fun readN(b: ByteArray, at: Int, len: Long): Long {
+        var v = 0L
+        var k = 0
+        while (k < len) { v = (v shl 8) or (b[at + k].toLong() and 0xFF); k++ }
+        return v
+    }
+
+    private fun fmtSize(n: Long): String =
+        if (n >= 1024 * 1024) String.format("%.1fMB", n / 1048576.0)
+        else if (n >= 1024) "${n / 1024}KB"
+        else "${n}B"
+
     /** 极简报告：品牌 / item 列表 / aux URN。 */
     fun describe(b: ByteArray): String {
         val sb = StringBuilder()
@@ -92,7 +163,8 @@ object HeifInspector {
                 val countOff = if (ver == 0) 4 + 2 else 4 + 4
                 val entries = child(b, iinf, countOff).filter { it.type == "infe" }
                 sb.append("item 数: ").append(entries.size).append('\n')
-                for (e in entries) {
+                // 一张 8MB 的 HEIC 可能带十几个 item（缩略图/alpha/多分辨率），全打会刷屏
+                for (e in entries.take(24)) {
                     val v = b[e.payloadStart].toInt() and 0xFF
                     var p = e.payloadStart + 4
                     val id: Long = if (v >= 3) { val x = u32(b, p); p += 4; x } else {
@@ -132,6 +204,12 @@ object HeifInspector {
                     }
                 }
             }
+            // ---- item 实际数据长度（iloc）。有了它才能判断"增益图在不在、多大"
+            val iloc = metaChildren.firstOrNull { it.type == "iloc" }
+            if (iloc != null) {
+                sb.append("iloc 长度: ").append(describeIloc(b, iloc)).append('\n')
+            }
+
             if (auxUrns.isEmpty()) {
                 sb.append("aux URN: 无（没有辅助图，通常也就没有增益图）\n")
             } else {

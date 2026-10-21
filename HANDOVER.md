@@ -14,7 +14,7 @@
 | 下一步唯一要做的事 | 手机插线解锁 → 开 USB 调试 → `hdc file send` 推 APK → 卓易通安装 → 选图，看到界面五段日志与左右预览（§3.0） |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:/Users/ugnam/hdc_official/hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。这是**机器级工具，不在仓库里**，换机器需重新获取（§1.3-C、`docs/03` §3.8）|
-| 下一个真问题 | 用户那张照片选图时报「不是合法 JPEG」，**至今未拿到原件**（鸿蒙相册受保护，hdc 读不到）。v0.1.3+ 已让 App 把格式魔数与 aux URN 打到屏幕上，装机后截图即可定位（§3.1）|
+| 下一个真问题 | 用户那张报错的照片**已确认是真 HEIC**（`ftyp` + `heic` 品牌，8.94 MB），且容器内系统转码不可用。v0.1.6 加了主图解码、`iloc` 长度诊断与「导出原图」，装上去跑一次即可判定里面有没有增益图（§3.1）|
 | 仓库 | `git@github.com:freakkid/hdr-vivid-ultrahdr.git`（私有），分支 `main` |
 | 最新提交 | 见 `git log --oneline -1`（写作时 `5e5eb96`）|
 | 交付形态 | **纯 Kotlin，APK 内 `.so` 数量为 0**。native libultrahdr 只是备选，从未编译验证 —— 别一上手就去接 NDK |
@@ -59,7 +59,7 @@ printf 'sdk.dir=C\\:\\\\Users\\\\<你的用户名>\\\\Android\\\\Sdk\n' > src/an
 
 # 4) 验证 Python 侧（28 项测试，1 秒）
 ./run.sh test
-python3 scripts/check_android_project.py  # 工程静态自检 44 项（纯标准库，任一 Python 3 均可，无需 venv）
+python3 scripts/check_android_project.py  # 工程静态自检 45 项（纯标准库，任一 Python 3 均可，无需 venv）
 
 # 5) 构建 APK
 export JAVA_HOME="$HOME/.workbuddy/binaries/jdk/17"
@@ -132,8 +132,8 @@ HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 
 ## 2. 基线状态
 
-Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 28 项、静态自检 44 项、
-APK 可构建（**v0.1.5 / versionCode 6**）。**已完成项不在此罗列**——证据在 `git log` 与
+Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 28 项、静态自检 45 项、
+APK 可构建（**v0.1.6 / versionCode 7**）。**已完成项不在此罗列**——证据在 `git log` 与
 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
 尚未做的只有 §3。
 
@@ -184,7 +184,7 @@ HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 
 # 3) 再推新包（用绝对锚点，不依赖当前目录）
 cd "$(git rev-parse --show-toplevel)/out"
-"$HDC" file send HdrVividUltraHdr-0.1.5-debug.apk \
+"$HDC" file send HdrVividUltraHdr-0.1.6-debug.apk \
   /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.5.apk
 
 # 4) 必须看到一行 2.2 MB 的 0.1.5.apk，否则推失败
@@ -217,37 +217,57 @@ cd "$(git rev-parse --show-toplevel)/out"
 
 截屏直接给结果，不用用户描述：`"$HDC" shell "snapshot_display -f /data/local/tmp/s.jpeg"` 然后 `file recv`。
 
-### 3.1 【P1】那张「不是合法 JPEG」的真实照片，至今没拿到
+### 3.1 【已定位，待决定实现力度】那张照片确认是**真 HEIC**
 
-用户反馈在手机上选某张照片报这个错。**原件始终没拿到**：
+2026-10-22 00:29 用户在手机上选图，App 打印了完整日志。**这不是猜测，是字节证据**：
 
-- 鸿蒙相册在受保护媒体库，`ls /storage/media/100/local/files/Docs/DCIM` 是空的，hdc 读不到
-- MTP 写入不可用（见 §5.2b），读取方向当时能拉到别的文件，但相册路径进不去
+```
+===== 载入 content://media =====
+[1/5] 读取字节
+格式=ISOBMFF(heic)  头部=00 00 00 1C 66 74 79 70 68 65 69 63
+⚠ 不是 JPEG，系统也未能转码
+长度：9376165 B
+[2/5] 解析容器
+ISOBMFF 顶层: ftyp meta mdat
+```
 
-因此**判断依据只能靠 App 打印的魔数与结构**。v0.1.3 起 `HeifInspector.kt` 会在遇到 ISOBMFF 时
-输出 `ftyp` 品牌、`meta` 子 box、`iinf` item 表、`iprp→ipco→auxC` 的 aux URN，
-并标注该 URN 是 ISO 21496-1 增益图 / 厂商 hdrgainmap / 深度图 / alpha / 缩略图。
+解码这几行：
 
-拿到那几行日志后，分三种情况：
+| 字节 | 含义 |
+|---|---|
+| `00 00 00 1C` | 第一个 box 长度 = 28 |
+| `66 74 79 70` | `ftyp` |
+| `68 65 69 63` | major brand = **`heic`** |
+| `ftyp meta mdat` | 标准 HEIF 图片结构（有 `meta` 就有 item 表，就有可能是带 aux 的 HDR）|
+| `9,376,165 B` | 8.94 MB —— 典型手机 HDR 照片体量 |
+
+**两条结论：**
+
+1. **它是真 HEIC，不是扩展名骗人的 JPEG**（对比赛张 `bluetooth_recv.heic` 是 `ff d8 ff e1` 的 JPEG，两者完全不同）。
+2. **容器内系统转码不可用**：`openTypedAssetFileDescriptor(uri, "image/jpeg")` 失败，
+   说明卓易通容器里的 MediaProvider 没提供该转换。所以「让系统转成 JPEG」这条路在容器里不存在。
+
+**尚未确认的关键一项**：这张 HEIC 里到底有没有增益图。需要看 `aux URN` 与 `iloc 长度`，
+而用户当时贴的日志停在第 2 段开头（后面还有内容没贴出来）。
+
+v0.1.6 已针对此改了三件事，一次就能把信息取全（不必再反复贴日志）：
+
+| 改动 | 作用 |
+|---|---|
+| `HeifInspector` 补 `iloc` 长度表 | 直接看到每个 item 的字节数，判断增益图在不在、多大 |
+| `HeicDecoder`（新增）| 用系统 `ImageDecoder`/`BitmapFactory` 试解主图，成功就显示，失败给出明确原因（缺解码器 vs 内存不足）|
+| 「导出原图」按钮 | 把原始字节写进 `下载/HDRRaw/*.heic`，用户用微信传出来 → 桌面 `pillow-heif` 可彻底分析 |
+
+**判定表**（装 v0.1.6 后看日志）：
 
 | 日志特征 | 结论 | 下一步 |
 |---|---|---|
-| `格式=JPEG` + `容器：PLAIN_JPEG` + `增益图：无` | 真是普通 SDR | 不需要处理，向用户解释即可 |
-| `格式=ISOBMFF(heic)` + 出现 `ftyp` / item 表 / aux URN | 真 HEIC | 走 §3.5 的路线 |
-| `格式=JPEG` 但解析抛异常 / 容器判定异常 | 段结构异常 | 看日志里 `头部=` 的 12 字节 hex 与异常堆栈定位 |
+| `aux URN` 里有 `21496` 或 `hdrgainmap` | **有增益图**，是 HDR 照片 | 值得做 HEIC 增益图提取（§3.5）|
+| `aux URN: 无` | 普通 SDR 的 HEIC | 只需支持主图解码，不做增益图 |
+| `解码通道：ImageDecoder` 且出图 | 容器有 HEVC 解码器 | 主图路径可行 |
+| `解码通道：none` + `连宽高都读不出` | 容器缺 HEIF 解析器 | 只能靠「导出原图」+ 桌面处理 |
 
-（注意：App **不打印**「图像数」和「段序列」，别按不存在的字段去找。）
-
-桌面侧辅助工具（需要原始文件时用；`$PY` 与占位符约定见 §6）：
-
-```bash
-PY="C:/Users/ugnam/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
-"$PY" scripts/analyze_image.py <你的文件> --extract
-```
-
-
-JPEG 走 uhdr 解析器、HEIC 走 pillow-heif，一次判死格式与 aux URN。
-`pillow-heif` 需手装（阿里云 index 没有，用清华源：`pip install pillow-heif -i https://pypi.tuna.tsinghua.edu.cn/simple`）。
+桌面侧若拿到原件：`"$PY" scripts/analyze_image.py <file> --extract`（见 §6）。
 
 ### 3.2 【P1】真实 HDR Vivid 样张覆盖 + App 端 LTM 目视确认
 
@@ -312,11 +332,14 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 当前只解析 JPEG。若源图是真 HEIC（`ftyp` 开头），不会崩，但会走到「已识别是 HEIC，
 本版不支持解码，结构已列在下方日志」。
 
-**已有的部分**（别重复造）：
-- `HeifInspector.kt` —— 纯 Kotlin ISOBMFF 遍历，输出 box 树 / item 表 / aux URN，不解码
-- `scripts/analyze_image.py` —— 桌面侧同类能力，走 pillow-heif，能把 aux 图 `--extract` 成 PNG
-- 系统转码兜底 —— 非 JPEG 时尝试 `ContentResolver.openTypedAssetFileDescriptor(uri, "image/jpeg", null)`，
-  **但增益图会在此步丢失**
+**已有部分**（v0.1.6 起，别重复造）：
+- `HeifInspector.kt` —— 纯 Kotlin ISOBMFF 遍历：box 树 / item 表 / `iloc` 长度 / aux URN，不解码
+- `HeicDecoder.kt` —— 系统解码器解**主图**（`ImageDecoder` API28+ → `BitmapFactory` 兜底），
+  软件位图、按 2 的幂采样。**拿不到增益图**（那是 Android 14 的 `Bitmap#getGainmap`）
+- 「导出原图」按钮 —— 原始字节写 `MediaStore.Downloads/HDRRaw/`，解决「原件取不出来」
+- `scripts/analyze_image.py` —— 桌面侧，走 pillow-heif，`--extract` 能把 aux 图解成 PNG
+- 系统转码兜底 —— `openTypedAssetFileDescriptor(uri, "image/jpeg", null)`，
+  **实测在卓易通容器内不可用**，且即使可用增益图也会丢
 
 **要做的**：任选一条，成本从低到高
 
@@ -459,7 +482,7 @@ PY="C:/Users/ugnam/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 ./run.sh demo                              # 端到端演示（合成源）
 PYTHONPATH=src/python "$PY" -m uhdr.cli inspect  <file>    # 容器结构诊断
 PYTHONPATH=src/python "$PY" -m uhdr.cli validate <file>    # 结构自检
-"$PY" scripts/check_android_project.py     # Android 工程静态自检（44 项，纯标准库）
+"$PY" scripts/check_android_project.py     # Android 工程静态自检（45 项，纯标准库）
 "$PY" scripts/analyze_image.py <file> [--extract]  # 一次判定 JPEG/HEIC + 增益图 URN
 bash tests/ltm_parity/run_parity.sh        # LTM 双实现对照（仅 macOS 验证过，见 §5.1）
 "$PY" tests/bake_quality_check.py <源.jpg>    # 烘焙画质体检（SSIM/等亮度HF/局部对比，信息性）
@@ -476,7 +499,7 @@ bash ../../scripts/fetch-libultrahdr.sh                 # 需要 native 时
 # 真机 —— 鸿蒙（当前设备，用 hdc）
 HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 cd "$ROOT" && "$HDC" list targets -v        # [Empty] = 没连上
-cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.5-debug.apk \
+cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.6-debug.apk \
   /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.5.apk
 "$HDC" shell "ls -l /storage/media/100/local/files/Docs/Download/*.apk"   # 必须出现 2.2 MB 的 0.1.5；只有旧包=推失败
 "$HDC" shell "snapshot_display -f /data/local/tmp/s.jpeg"   # 截屏
@@ -484,7 +507,7 @@ cd "$ROOT/out" && "$HDC" file recv /data/local/tmp/s.jpeg "screen_$(date +%H%M%S
   # 别覆盖 phone_screen.jpeg——它已入库且被 §8 列为隐私文件
 
 # 真机 —— 安卓（旧 Mate 30 / 模拟器，用 adb）
-cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.5-debug.apk
+cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.6-debug.apk
 F="cache/exports/IMG_xxxx_HDR.jpg"       # 换成实际文件名，别照抄 <file> 占位符
 adb exec-out run-as com.finn.hdr cat "$F" > pulled.jpg \
   && test -s pulled.jpg || echo "拉取失败或文件不存在"   # 重定向会掩盖失败，必须 test -s
@@ -597,7 +620,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地现存：`out/HdrVividUltraHdr-0.1.5-debug.apk`（2,235,718 B ≈ 2.13 MiB）。
+本地现存：`out/HdrVividUltraHdr-0.1.6-debug.apk`（约 2.2 MB）。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 
@@ -619,7 +642,8 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 | 0.1.2 | 3 | `97b0505` | **实时预览**（左原图 / 右烘焙后）、五段式 `[1/5]…[5/5]` 日志、强度滑杆联动重算 | **两个图片位** + 「导出全尺寸」+「复制全部日志」|
 | 0.1.3 | 4 | `3b3c777` | `HeifInspector` 结构探针（不解码也读出 aux URN）| 选到 HEIC 时日志出现 `ftyp` / item 表 |
 | 0.1.4 | 5 | `7a9ba54` | 日志自动滚到底、保存到相册、导出只留 10 份、旋转不重建 Activity | 「保存烘焙图到相册」按钮 |
-| **0.1.5** | **6** | `5e5eb96` | 三路审查修复：线程崩溃 / 往返丢增益参数 / EXIF 方向 / 采样解码防 OOM / 预览防抖 / 解析溢出 | 外观同 0.1.4，行为更稳 |
+| 0.1.5 | 6 | `5e5eb96` | 三路审查修复：线程崩溃 / 往返丢增益参数 / EXIF 方向 / 采样解码防 OOM / 预览防抖 / 解析溢出 | 外观同 0.1.4，行为更稳 |
+| **0.1.6** | **7** | 本地构建（见下条提交）| **HEIC 主图解码** + `iloc` 长度诊断 + **「导出原图」** 按钮 | 多一个「导出原图（HEIC 无增益图时用）」按钮 |
 
 ### 11.3 一眼判定手机上装的是哪版
 
@@ -627,6 +651,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 
 | 看到这个 | 版本 |
 |---|---|
+| 「导出原图（HEIC 无增益图时用）」按钮 | **0.1.6** |
 | 「保存烘焙图到相册」按钮 | ≥ 0.1.4 |
 | 「复制全部日志」按钮 + 两个图片位 | ≥ 0.1.2 |
 | 只有「用文件管理器选择」多出来，没有图片位 | 0.1.1 |

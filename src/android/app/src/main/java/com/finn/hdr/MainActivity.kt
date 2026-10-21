@@ -42,6 +42,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var previewAfter: ImageView
     private lateinit var shareBaked: Button
     private lateinit var saveBaked: Button
+    private lateinit var exportRawButton: Button
     private lateinit var shareHdr: Button
     private lateinit var exportButton: Button
     private lateinit var profileSpinner: Spinner
@@ -54,6 +55,9 @@ class MainActivity : ComponentActivity() {
     private var pvGain: Bitmap? = null
     private var bakedFile: File? = null
     private var hdrFile: File? = null
+
+    /** 选中的原始文件字节。HEIC 走不通时靠它把原件导出去，交给桌面端处理。 */
+    private var lastRawBytes: ByteArray? = null
 
     /** 日志文件：容器里没有 logcat，这是唯一可回溯的记录。 */
     private val logFile: File by lazy { File(filesDir, "hdr-log.txt") }
@@ -231,6 +235,13 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { saveToGallery(bakedFile) }
         }
 
+        // HEIC 解不了时的唯一出路：把原件导到相册，用户自己用微信传出去
+        exportRawButton = Button(this).apply {
+            text = "导出原图（HEIC 无增益图时用）"
+            isEnabled = false
+            setOnClickListener { exportRawFile() }
+        }
+
         val copyLogButton = Button(this).apply {
             text = "复制全部日志"
             setOnClickListener {
@@ -260,6 +271,7 @@ class MainActivity : ComponentActivity() {
         root.addView(shareBaked)
         root.addView(shareHdr)
         root.addView(saveBaked)
+        root.addView(exportRawButton)
         root.addView(copyLogButton)
         root.addView(
             scroll,
@@ -277,6 +289,7 @@ class MainActivity : ComponentActivity() {
         appendLog("\n===== 载入 ${uri.scheme}://${uri.authority} =====")
         bakedFile = null
         hdrFile = null
+        lastRawBytes = null
         previewGen.incrementAndGet()   // 作废上一张图残留的预览任务
         previewHandler.removeCallbacks(previewTask)
         exportButton.isEnabled = false
@@ -284,6 +297,7 @@ class MainActivity : ComponentActivity() {
             shareBaked.isEnabled = false
             shareHdr.isEnabled = false
             saveBaked.isEnabled = false
+            exportRawButton.isEnabled = false
             previewBefore.setImageDrawable(null)
             previewAfter.setImageDrawable(null)
         }
@@ -298,11 +312,32 @@ class MainActivity : ComponentActivity() {
                 appendLog("[2/5] 解析容器")
                 val fmtNow = sniffFormat(rawBytes).first
                 if (fmtNow.startsWith("ISOBMFF")) {
-                    // 不解码，先把结构读出来：有没有 aux、URN 叫什么，直接决定后续路线
-                    appendLog("这是 HEIC/HEIF，当前版本不解码。结构如下：")
+                    // 两步走：① 把结构读出来（决定有没有增益图）② 用系统解码器解主图（让用户先看到画面）
+                    appendLog("[2a/5] HEIC 结构诊断")
                     appendLog(HeifInspector.describe(rawBytes))
-                    say("这是 HEIC（鸿蒙相机可能默认此格式），本版不支持解码。结构已列在下方日志。")
-                    appendLog("→ 请点下方「复制全部日志」把上面结构发我，据此判断是否值得做 HEIC 支持。")
+                    lastRawBytes = rawBytes
+
+                    appendLog("[2b/5] 尝试解码 HEIC 主图（增益图不会被提取）")
+                    val dec = HeicDecoder.decodeMain(rawBytes, previewEdge)
+                    appendLog("解码通道：${dec.engine}  ${dec.width}x${dec.height}")
+                    appendLog(dec.note)
+                    runOnUiThread { exportRawButton.isEnabled = true }
+
+                    if (dec.ok) {
+                        pvBase = dec.bitmap
+                        pvGain = null
+                        runOnUiThread {
+                            previewBefore.setImageBitmap(dec.bitmap)
+                            previewAfter.setImageDrawable(null)
+                        }
+                        say("HEIC 主图已显示，但增益图未提取 —— 无法烘焙 HDR 效果。")
+                        appendLog("→ 结论：能看到画面，但烘不出 HDR。若要保住效果需提取增益图（见下方 aux URN）。")
+                        appendLog("→ 可点「导出原图」把 .heic 存到相册，用微信发出来在桌面端处理。")
+                    } else {
+                        say("HEIC 无法解码：容器里缺 HEIF/HEVC 解码器。")
+                        appendLog("→ 结构已列出；请点「复制全部日志」发我，同时可用「导出原图」把文件传出来。")
+                        appendLog("→ 备选：相册里「另存为 JPG」再选（注意：增益图会在另存时丢失）。")
+                    }
                     return@Thread
                 }
                 val src = HdrSourceParser.parse(rawBytes)
@@ -532,18 +567,29 @@ class MainActivity : ComponentActivity() {
         val head = "格式=$name  头部=$hex"
         if (name == "JPEG") return raw to head
 
-        val transcoded = try {
-            contentResolver.openTypedAssetFileDescriptor(uri, "image/jpeg", null)?.use { afd ->
-                afd.createInputStream().use { it.readBytes() }
+        // 非 JPEG：试一次让系统转成 JPEG。失败原因要分开报，否则无法判断是
+        // 「provider 不支持该转换」还是「根本没有解码器」。
+        var transcoded: ByteArray? = null
+        try {
+            val afd = contentResolver.openTypedAssetFileDescriptor(uri, "image/jpeg", null)
+            if (afd == null) {
+                appendLog("系统转码：openTypedAssetFileDescriptor 返回 null（provider 不支持转 image/jpeg）")
+            } else {
+                afd.use { a -> a.createInputStream().use { transcoded = it.readBytes() } }
+                appendLog("系统转码：返回 ${transcoded?.size ?: 0} B")
             }
         } catch (t: Throwable) {
-            appendLog("转码尝试异常：${describe(t)}")
-            null
+            appendLog("系统转码异常：${describe(t)}")
         }
-        if (transcoded != null && sniffFormat(transcoded).first == "JPEG") {
-            return transcoded to "$head\n已由系统转码为 JPEG：${transcoded.size} B（注意：增益图会在此步丢失）"
+        val tc = transcoded
+        if (tc != null && tc.isNotEmpty()) {
+            val tf = sniffFormat(tc).first
+            if (tf == "JPEG") {
+                return tc to "$head\n已由系统转码为 JPEG：${tc.size} B（注意：增益图会在此步丢失）"
+            }
+            appendLog("系统转码返回的仍不是 JPEG（$tf），放弃该通道")
         }
-        return raw to "$head\n⚠ 不是 JPEG，系统也未能转码。若是 HEIC，请在相册「另存/导出为 JPG」后再选。"
+        return raw to "$head\n⚠ 不是 JPEG，系统转码也不可用。下面先读结构、再试本地解码。"
     }
 
     /** 按目标长边做采样解码，避免 5760×4320 直接解码耗尽内存。 */
@@ -569,6 +615,71 @@ class MainActivity : ComponentActivity() {
             val files = dir.listFiles()?.sortedByDescending { it.lastModified() } ?: return
             files.drop(keep).forEach { it.delete() }
         }
+    }
+
+    /**
+     * 把选中的**原始文件字节**导出到系统「下载」目录。
+     *
+     * 为什么需要它：鸿蒙相册在受保护媒体库，`hdc` 读不到；容器内 App 私有目录也拿不出来。
+     * App 是目前唯一能读到这些字节的地方，所以由 App 负责落盘，
+     * 用户再用微信/数据线传出来，桌面端就能用 pillow-heif 彻底分析。
+     *
+     * 走 `MediaStore.Downloads`（API 29+）：无需存储权限，且文件管理器可见。
+     */
+    private fun exportRawFile() {
+        val bytes = lastRawBytes
+        if (bytes == null || bytes.isEmpty()) {
+            say("还没有读到原始文件，请先选图")
+            return
+        }
+        if (android.os.Build.VERSION.SDK_INT < 29) {
+            say("系统低于 Android 10，暂不支持直接导出（请用「发送」按钮）")
+            return
+        }
+        val (fmt, _) = sniffFormat(bytes)
+        val ext = when {
+            fmt.startsWith("ISOBMFF") -> "heic"
+            fmt == "JPEG" -> "jpg"
+            fmt == "PNG" -> "png"
+            else -> "bin"
+        }
+        val mime = when (ext) {
+            "heic" -> "image/heic"
+            "jpg" -> "image/jpeg"
+            "png" -> "image/png"
+            else -> "application/octet-stream"
+        }
+        val name = "HDR_RAW_${System.currentTimeMillis()}.$ext"
+        say("导出原图中…")
+        Thread {
+            try {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
+                        android.os.Environment.DIRECTORY_DOWNLOADS + "/HDRRaw")
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
+                ) ?: error("MediaStore.insert 返回 null（容器可能不支持 Downloads 集合）")
+                contentResolver.openOutputStream(uri)?.use { out ->
+                    out.write(bytes)
+                    out.flush()
+                } ?: error("openOutputStream 返回 null")
+                values.clear()
+                values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                contentResolver.update(uri, values, null, null)
+
+                appendLog("已导出原图：$name（${bytes.size} B, $mime）")
+                runOnUiThread {
+                    infoView.text = "原图已导出到 下载/HDRRaw/$name\n用微信发出来即可在桌面分析"
+                }
+            } catch (t: Throwable) {
+                appendLog("导出原图失败：${describe(t)}")
+                runOnUiThread { infoView.text = "导出原图失败：${t.javaClass.simpleName}" }
+            }
+        }.start()
     }
 
     /**
