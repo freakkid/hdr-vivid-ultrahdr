@@ -35,3 +35,6 @@ out/baked*.jpg
 out/bake_compare.jpg
 out/preview*.jpg
 out/t_*.jpg
+
+# 目视对比材料（含真实照片内容，同 baked 产物处理）
+out/visual/

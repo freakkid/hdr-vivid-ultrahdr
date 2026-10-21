@@ -11,7 +11,7 @@
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG |
 | 到哪一步了 | Ultra HDR 主链路与烘焙链路（HDR → 普通 JPEG，含 App 端局部色调映射）均已实现并通过自动化验证；本机构建环境已就绪。剩下的全是真机实测类事项（§3） |
-| 明天第一件事 | 真机点一次导出：确认 `HDRCapacityMax` 修正（§3.1）+ 目视确认 App 端 LTM 三档效果（local/wechat/off，§3.2） |
+| 明天第一件事 | 打开 `out/visual/` 目视 LTM 三档效果（§3.1，材料已备好）；导出链路与 HDRCapacityMax 已在模拟器验证（docs/02 §2.8） |
 | 仓库 | `git@github.com:freakkid/hdr-vivid-ultrahdr.git`（私有），分支 `main` |
 | 最新提交 | 见 `git log --oneline -1` |
 
@@ -86,25 +86,18 @@ cd src/android && bash gradlew assembleDebug --no-daemon   # gradlew 无可执�
 
 ## 2. 基线状态
 
-Ultra HDR 主链路与烘焙链路均已实现并通过自动化验证（回归 27 项、静态自检 43 项、
-APK 可构建、Kotlin/Python 双实现数值对照通过）。**已完成项不在此罗列**——
-证据在 `git log` 与 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
+Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 27 项、静态自检 43 项、
+APK 可构建、Kotlin/Python 双实现数值对照通过、**模拟器端到端实测通过**
+（App 产物经 Python 独立校验 20/20，App 与 Python 烘焙输出 SSIM 0.95，
+细节见 docs/02 §2.8）。**已完成项不在此罗列**——证据在 `git log` 与
+`docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
 尚未做的只有 §3。
 
 ---
 
 ## 3. 未完成（按优先级）
 
-### 3.1 【P0，1 分钟】真机确认 HDRCapacityMax 修正
-
-代码已改（`40ef88b`），当前 APK（`e01bb9a`）已包含，但**没在真机上跑过**（自动化操作在 picker 处被系统打断）。
-
-操作：打开「HDR Vivid 导出器」→「选择 HDR 照片并导出」→ 选 `Download/IMG_20261018_182526_111421.heic`
-
-判定：出现 `validate: ok=true errors=0` 且尾部「已写出 …HDR.jpg」即通过。
-若出现 `✗ gainmap_xmp_present` 或 `✗ aspect_consistent`，把整屏文字发出来。
-
-### 3.2 【P1】真实 HDR Vivid 样张覆盖 + App 端 LTM 目视确认
+### 3.1 【P1】真实 HDR Vivid 样张覆盖 + App 端 LTM 目视确认
 
 目前只有 1 张真实样张（ISO 载体）。**Mate 30（麒麟 990）拍不出 HDR Vivid**，它只能当接收/显示端。
 
@@ -117,26 +110,30 @@ APK 可构建、Kotlin/Python 双实现数值对照通过）。**已完成项不
 
 获取途径：另一台华为设备（Mate 40/P50 之后）、或在网上找 `.jpg` 格式的 Vivid 样张。
 
-### 3.3 【P1】微信三路径实测
+**目视材料已备好**（`out/visual/`，gitignored）：`app_local.jpg`（模拟器实跑产物）、
+`py_off/local/wechat.jpg`（Python 同参三档）。在 Mac 上直接打开即可开始看，
+不用等设备。HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
+
+### 3.2 【P1】微信三路径实测
 
 模板：`tests/acceptance-matrix.md`、`tests/test_matrix.md`。需要三台设备（发送端/接收端/对照端），大量收发。
 
 **这是直接决定产品能否对外承诺的部分。**
 
-### 3.4 【P2】路线 A：线性光重算
+### 3.3 【P2】路线 A：线性光重算
 
 当前走的是路线 B（复用源增益图直接封装），CUVA 源可能存在色偏。路线 A 需要：
 解 HDR（PQ/HLG → 线性 + BT.2020 变换）→ 重新 tone map 出 SDR → 用 libultrahdr **API-1** 重算增益图。
 
 需要先把 libultrahdr 编进 APK（`bash scripts/fetch-libultrahdr.sh` + `./gradlew assembleDebug -PwithNative=true`），且 JNI 侧目前只实现了 API-4 与 probe。
 
-### 3.5 【P2】HEIC（ISOBMFF）容器不支持
+### 3.4 【P2】HEIC（ISOBMFF）容器不支持
 
 当前只解析 JPEG。若源图是真 HEIC（`ftyp` 开头），会直接判 `plain_jpeg`。华为部分机型/设置下会产出 HEIC。
 
 需引入 libheif 或 Android 的 `ImageDecoder` 读辅助图。**注意**：本次那张 `.heic` 其实是 JPEG（扩展名骗人），先看魔数再判断是否需要这条。
 
-### 3.6 【P3】native 路径未验证
+### 3.5 【P3】native 路径未验证
 
 `uhdr_jni.cpp` 写完了但从未编译过（本机无 NDK）。`-PwithNative=true` 时才会编，App 会自动回退到纯 Kotlin 封装（日志里会写 `native 不可用（UnsatisfiedLinkError）`）。
 
@@ -165,6 +162,8 @@ APK 可构建、Kotlin/Python 双实现数值对照通过）。**已完成项不
 | `build-tools` 包顶层目录是 `android-14` | 解压后 AGP 找不到 | 必须改名放到 `build-tools/34.0.0/` |
 | 缺 licenses 文件 | `licenses have not been accepted` | 手写 3 个 hash（见 docs/03 §3.3-2） |
 | `local.properties` 转义 | `SDK location not found` | `sdk.dir=C\:\\Users\\...\\Android\\Sdk` |
+| 模拟器 Photo Picker 不显示 push 的文件 | picker 显示 "No photos or videos" | Picker 只认媒体库：push 后还需 `content insert` 插一条 MediaStore 记录（命令见 docs/02 §2.8）；picker 已打开时不刷新，需 BACK 关掉重开 |
+| `gradlew` 无可执行位 | `permission denied: ./gradlew` | 用 `bash gradlew` 调 |
 
 ### 5.2 真机（华为 Mate 30 / EMUI）
 
@@ -247,7 +246,7 @@ adb logcat -d -b crash | grep finn                                          # �
 
 构建/安装命令见 §1.3 与 §6。真机结果补进 `docs/02-verification.md` §2.7。
 
-**如果只有 10 分钟**：做 §3.1。**如果有半天**：§3.2 + §3.3 一起推，把实测矩阵填满。
+**如果只有 10 分钟**：目视 `out/visual/` 三档图（§3.1）。**如果有半天**：§3.1 + §3.2 一起推，把实测矩阵填满。
 
 ---
 
@@ -279,7 +278,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 |---|---|---|
 | P2 | 微信档实测 | `wechat` profile 的 detail_gain=1.12 未经真机二次压缩验证 |
 
-（真实样张覆盖与 LTM 目视已并入 §3.2，不重复列。LTM 参数决策已于 2026-10-21
+（真实样张覆盖与 LTM 目视即 §3.1，不重复列。LTM 参数决策已于 2026-10-21
 执行：eps 调至 0.2/0.15，依据与验证数据见 docs/04 §8.5。）
 
 ### 10.4 踩过的坑

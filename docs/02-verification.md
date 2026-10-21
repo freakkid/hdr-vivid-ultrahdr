@@ -177,3 +177,45 @@ validate: ok=true errors=0
 3. 「厂商标记」只能是弱证据，不能压过容器结构证据
 4. 同一套解析逻辑在 Kotlin / Python 双实现时，必须用真实样张双向交叉验证
 5. 双写元数据后，validator 的断言要跟着改（主图只查 Version，完整参数查增益图）
+
+## 2.8 无真机验证路径：模拟器实测（2026-10-21，HDRCapacityMax 修正确认）
+
+真机不在身边时，用本机模拟器（Pixel_XL_API_33 / Android 13 / arm64）复现了
+完整导出流程。**结论：HDRCapacityMax 修正生效，`validate: ok=true errors=0`。**
+
+操作链（关键步骤）：
+
+1. `adb push` 样张到 `/sdcard/Download/` **不够**——Photo Picker 只认媒体库，
+   需再插一条 MediaStore 记录（否则 picker 显示 "No photos or videos"）：
+   ```bash
+   adb shell content insert --uri content://media/external/images/media \
+     --bind _data:s:/sdcard/Download/test_hdr.jpg --bind title:s:test_hdr \
+     --bind _display_name:s:test_hdr.jpg --bind mime_type:s:image/jpeg \
+     --bind date_added:l:$(date +%s) --bind width:i:2048 --bind height:i:1536
+   ```
+   picker 已打开时不刷新，需 `KEYCODE_BACK` 关掉重开。
+2. `uiautomator dump` 找按钮/网格项坐标，`input tap` 驱动（按钮
+   「选择 HDR 照片并处理」→ Recent 网格第一张 → 等约 20 秒）
+3. 再 `uiautomator dump` 读回日志 TextView；产物用
+   `adb exec-out run-as com.finn.hdr cat cache/exports/<file>.jpg` 拉回桌面
+
+模拟器实测输出（源：`out/real_sample.ultrahdr.jpg`，profile=local，强度 0.70）：
+
+```
+容器：ISO_ULTRA_HDR      增益图：有（45529 B）   Make：HUAWEI
+HDR 峰值：2.24x  白点：1.00  最大 boost：4.00x  高光裁切：0.00%
+LTM：半径=32px  detail增益=1.32  暗部提升=1.49x
+package[kotlin-packager]: 1231649B
+validate: ok=true errors=0          ← 10 项 ✓ 全过
+已写出：…_BAKED.jpg（1478 KB）  …_HDR.jpg（1202 KB）
+```
+
+交叉验证（双实现互证，两条都过）：
+
+| 验证 | 结果 |
+|---|---|
+| App 的 Ultra HDR 产物 → Python 独立校验 | **20/20 全 PASS**，`capacity_matches_gainmap: GainMapMax=2.0000 HDRCapacityMax=2.0000 差=0.0000`（log2 域修正确认） |
+| App 的烘焙图 vs Python 同参烘焙 | **SSIM 0.9521**；亮度差 mean 1.38 / p99 7.72（0-255）；LTM 统计逐项一致（r=32 / detail=1.32 / 暗部提升 1.49x）。残差来自 Android 编码器 4:2:0 vs Python 4:4:4、抖动 RNG、增益图重采样——实现级差异，非算法分歧 |
+
+模拟器的局限（不得对外声称的部分）：HDR **显示**效果（Ultra HDR 增益图还原）
+在模拟器上看不到，只能验证容器结构；微信传输实测仍需真机。
