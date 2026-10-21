@@ -1,6 +1,6 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-21（新机器接力：环境已重建，LTM 已移植，双实现对照通过）
+> 最后更新：2026-10-21（LTM 已移植并提交 e01bb9a；本机环境已重建；清理已完成条目）
 > 读这一篇就能接手，不需要回看聊天记录。
 
 ---
@@ -10,12 +10,10 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG |
-| 到哪一步了 | **主链路已打通并在真机验证过**（Android 识别 ISO 21496-1 / XMP / CUVA 三种源，10 项自检全过）；**烘焙链路 LTM 已移植到 App**，与 Python 侧双实现数值对照 8bit 级最大差 1 LSB；本机（macOS）构建环境已重建（JDK 17 + SDK 34，`assembleDebug` 通过） |
+| 到哪一步了 | Ultra HDR 主链路与烘焙链路（HDR → 普通 JPEG，含 App 端局部色调映射）均已实现并通过自动化验证；本机构建环境已就绪。剩下的全是真机实测类事项（§3） |
 | 明天第一件事 | 真机点一次导出：确认 `HDRCapacityMax` 修正（§3.1）+ 目视确认 App 端 LTM 三档效果（local/wechat/off，§3.2） |
 | 仓库 | `git@github.com:freakkid/hdr-vivid-ultrahdr.git`（私有），分支 `main` |
 | 最新提交 | 见 `git log --oneline -1` |
-
-**一句话状态：编码链路已验证可用；LTM 移植与双实现对照已完成（未真机目视）；剩下的是「真实样张覆盖」与「第三方平台存活率」两类实测。**
 
 ---
 
@@ -28,13 +26,14 @@ hdr-vivid-ultrahdr/
 ├── docs/
 │   ├── 00-landscape.md      生态调研（libultrahdr / pyultrahdr / uhdrtool / Lightroom 基线）
 │   ├── 01-design.md         主设计 A–H（结论/格式/管线/代码/微信/测试/风险/待核实）
-│   ├── 02-verification.md   已验证事实 + 今晚真机排障全过程（§2.7 必读）
-│   └── 03-toolchain-setup.md 构建环境安装（dl.google.com 不可达方案）
+│   ├── 02-verification.md   已验证事实 + 真机排障全过程（§2.7）
+│   ├── 03-toolchain-setup.md 构建环境安装（dl.google.com 不可达方案）
+│   └── 04-HANDOFF-bake.md   烘焙链路算法决策记录
 ├── src/android/             ★ Android 实现（交付物）
 ├── src/python/uhdr/         容器参考实现与校验器（工具链，不进 APK）
 ├── src/harmony/, src/ets/   HarmonyOS/ArkTS 链路（骨架，未真机验证）
 ├── scripts/                 工程自检、工具链安装、一键提交
-├── tests/                   回归测试 + 实测矩阵模板
+├── tests/                   回归测试 + 双实现对照 + 实测矩阵模板
 └── out/                     产物：APK、截图、样例
 ```
 
@@ -51,9 +50,9 @@ bash scripts/install_android_toolchain.sh
 # 3) 生成 local.properties（每台机器不同，故意不入库）
 printf 'sdk.dir=C\\:\\\\Users\\\\<你的用户名>\\\\Android\\\\Sdk\n' > src/android/local.properties
 
-# 4) 验证 Python 侧（27 项测试，1.6 秒）
+# 4) 验证 Python 侧（27 项测试，1 秒）
 ./run.sh test
-python scripts/check_android_project.py     # 工程静态自检 40 项
+python scripts/check_android_project.py     # 工程静态自检 43 项
 
 # 5) 构建 APK
 export JAVA_HOME="$HOME/.workbuddy/binaries/jdk/17"
@@ -85,21 +84,12 @@ cd src/android && bash gradlew assembleDebug --no-daemon   # gradlew 无可执�
 
 ---
 
-## 2. 已完成（有证据）
+## 2. 基线状态
 
-| 能力 | 状态 | 证据 |
-|---|---|---|
-| 识别 ISO 21496-1 载体（无 XMP） | ✅ | 真机：`容器：ISO_ULTRA_HDR / 增益图：332469 B` |
-| 识别 XMP GContainer 载体 | ✅ | `out/sample.ultrahdr.jpg` 自检 19 项 PASS |
-| 识别 CUVA（APP5 副图） | ✅ | 合成源 `samples/sample_cuva_3000x2250.jpg` |
-| 增益图同步缩放 / 裁剪 / 旋转 | ✅ | 单测覆盖 1/4、0.3556 两种比例，误差 0 |
-| 预压缩固定 2048 长边 | ✅ | 5760×4320 → 2048×1536，增益图 2048×1536 → 728×546 |
-| Ultra HDR 容器封装 | ✅ | 纯 Kotlin 实现，无 NDK 也能出包 |
-| 导出后结构自检 | ✅ | 真机 10 项全过；桌面 19 项全过 |
-| 可安装 APK | ✅ | 2.2 MB，`com.finn.hdr`，minSdk 26 / targetSdk 34 |
-| 双向交叉验证 | ✅ | Android 产物拉回桌面，Python 独立解析 19 项 PASS |
-| 烘焙 LTM（App 侧局部色调映射） | ✅ | `LocalToneMapping.kt` 移植自 `ltm.py`；双实现对照 8bit 级最大差 1 LSB、无像素差 >1 LSB（`tests/ltm_parity/`）；桌面 JVM 2048×1536 411 ms。**未真机目视** |
-| Python 回归 | ✅ | 27 项通过，含 3 条负向（截断/篡改 offset/删 XMP） |
+Ultra HDR 主链路与烘焙链路均已实现并通过自动化验证（回归 27 项、静态自检 43 项、
+APK 可构建、Kotlin/Python 双实现数值对照通过）。**已完成项不在此罗列**——
+证据在 `git log` 与 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
+尚未做的只有 §3。
 
 ---
 
@@ -107,7 +97,7 @@ cd src/android && bash gradlew assembleDebug --no-daemon   # gradlew 无可执�
 
 ### 3.1 【P0，1 分钟】真机确认 HDRCapacityMax 修正
 
-代码已改（`40ef88b`）并构建安装，但**最后一版没在真机上跑过**（自动化操作在 picker 处被系统打断）。
+代码已改（`40ef88b`），当前 APK（`e01bb9a`）已包含，但**没在真机上跑过**（自动化操作在 picker 处被系统打断）。
 
 操作：打开「HDR Vivid 导出器」→「选择 HDR 照片并导出」→ 选 `Download/IMG_20261018_182526_111421.heic`
 
@@ -121,7 +111,7 @@ cd src/android && bash gradlew assembleDebug --no-daemon   # gradlew 无可执�
 需要补齐：逆光人像、高饱和、暗部细节、纯色背景 各 2–3 张，用来验证：
 - 增益图语义换算是否引入偏色（对比 HDR 合成结果做 ΔE）
 - 极端动态范围下 `max_content_boost` 会不会超界
-- **（新增）App 端 LTM 三档目视**：local / wechat / off 对比桌面 Python 同档输出，
+- App 端 LTM 三档目视：profile 下拉切 local / wechat / off 各导一次，
   重点看有无 halo（guided filter 失效）、灰雾（黑位重锚不足）、「假 HDR」感
 
 获取途径：另一台华为设备（Mate 40/P50 之后）、或在网上找 `.jpg` 格式的 Vivid 样张。
@@ -130,7 +120,7 @@ cd src/android && bash gradlew assembleDebug --no-daemon   # gradlew 无可执�
 
 模板：`tests/acceptance-matrix.md`、`tests/test_matrix.md`。需要三台设备（发送端/接收端/对照端），大量收发。
 
-**这是唯一还没做、但直接决定产品能否对外承诺的部分。**
+**这是直接决定产品能否对外承诺的部分。**
 
 ### 3.4 【P2】路线 A：线性光重算
 
@@ -155,7 +145,7 @@ cd src/android && bash gradlew assembleDebug --no-daemon   # gradlew 无可执�
 
 | 决策 | 原因 |
 |---|---|
-| Python + Kotlin 双实现 | 判断容器写得对不对，不能用写它的同一份代码。今晚的真机 bug 正是靠双实现对照、20 分钟定位 |
+| Python + Kotlin 双实现 | 判断容器写得对不对，不能用写它的同一份代码。此前的真机 bug 正是靠双实现对照、20 分钟定位 |
 | 完整 hdrgm 参数写在**增益图**自身 XMP，主图只留 `Version` | 规范要求参数随增益图走；只写一处时部分解码器识别不到。**validator 断言要跟着这个设计走** |
 | 固定 2048，不用 2050 | 2050 无收益、非 2 的幂、增加越界风险；Lightroom Mobile 的「Small (2048px)」预设是业界基线 |
 | 2048 只减害尺寸压缩，不解决元数据剥离 | 这两件事必须分开对用户讲，否则是错误承诺 |
@@ -249,19 +239,9 @@ adb logcat -d -b crash | grep finn                                          # �
 
 ---
 
-## 9. 明天第一步
+## 9. 时间分配建议
 
-```bash
-git pull                                    # 确认拿到最新
-export JAVA_HOME=/opt/homebrew/opt/openjdk@17
-export ANDROID_HOME=~/Library/Android/sdk
-cd src/android && bash gradlew assembleDebug --no-daemon   # 环境已就绪（见 §1.3），约 20 秒
-adb install -r app/build/outputs/apk/debug/app-debug.apk
-```
-
-然后按 §3.1 在真机点一次（选 Download/IMG_20261018_182526_111421.heic），
-把结果补进 `docs/02-verification.md` §2.7 的「修复后的真机结果」；
-顺手在 profile 下拉里切换 local / wechat / off 各导一次，完成 §3.2 的 LTM 目视确认。
+构建/安装命令见 §1.3 与 §6。真机结果补进 `docs/02-verification.md` §2.7。
 
 **如果只有 10 分钟**：做 §3.1。**如果有半天**：§3.2 + §3.3 一起推，把实测矩阵填满。
 
@@ -293,11 +273,11 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
-| ~~**P1**~~ | ~~LTM 移植到 `HdrBaker.kt`~~ | ✅ 已完成（2026-10-21）：新增 `LocalToneMapping.kt`，App 三档 profile（local/wechat/off）与 Python 语义对齐，双实现数值对照 8bit 级最大差 1 LSB（见 docs/04 §7.4）。同时修正 Kotlin 侧 P0-1 同类 bug（对比度/饱和度线性域→sRGB 域）与白点锚定（peak→sdr-white） |
 | **P1** | 高频能量指标复核 | 该指标降 36% 但目视更好，需用 SSIM + 等亮度归一化复核，勿据此判画质 |
-| P1 | 真实样张覆盖 | 目前只有 1 张真实 ISO Ultra HDR；CUVA 源未测烘焙；App 端 LTM 效果待真机目视确认 |
 | P2 | 微信档实测 | `wechat` profile 的 detail_gain=1.12 未经真机二次压缩验证 |
 | P2 | 强度可调 UI | 当前 strength 写死 0.70，未暴露给用户（profile 已可选） |
+
+（真实样张覆盖与 LTM 目视已并入 §3.2，不重复列。）
 
 ### 10.4 踩过的坑
 
