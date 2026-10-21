@@ -277,6 +277,15 @@ class MainActivity : ComponentActivity() {
                 appendLog("长度：${rawBytes.size} B")
 
                 appendLog("[2/5] 解析容器")
+                val fmtNow = sniffFormat(rawBytes).first
+                if (fmtNow.startsWith("ISOBMFF")) {
+                    // 不解码，先把结构读出来：有没有 aux、URN 叫什么，直接决定后续路线
+                    appendLog("这是 HEIC/HEIF，当前版本不解码。结构如下：")
+                    appendLog(HeifInspector.describe(rawBytes))
+                    infoView.text = "这是 HEIC（鸿蒙相机可能默认此格式），本版不支持解码。结构已列在下方日志，请复制发我。"
+                    appendLog("→ 请点下方「复制全部日志」把上面结构发我，据此判断是否值得做 HEIC 支持。")
+                    return@Thread
+                }
                 val src = HdrSourceParser.parse(rawBytes)
                 parsed = src
                 appendLog("容器：${src.container}")
@@ -497,7 +506,7 @@ class MainActivity : ComponentActivity() {
             null
         }
         if (transcoded != null && sniffFormat(transcoded).first == "JPEG") {
-            return transcoded to "$head\n已由系统转码为 JPEG：${transcoded.size} B"
+            return transcoded to "$head\n已由系统转码为 JPEG：${transcoded.size} B（注意：增益图会在此步丢失）"
         }
         return raw to "$head\n⚠ 不是 JPEG，系统也未能转码。若是 HEIC，请在相册「另存/导出为 JPG」后再选。"
     }
