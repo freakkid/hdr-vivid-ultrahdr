@@ -38,8 +38,15 @@ object LocalToneMapping {
     data class Params(
         /** guided filter 半径（相对短边），越大越不易出 halo，但越慢 */
         val radiusFrac: Float = 1f / 48f,
-        /** 保边阈值（log2 亮度方差单位），越小越「只在大边缘才保留」 */
-        val eps: Float = 4.0e-3f,
+        /**
+         * 保边阈值（log2 亮度方差单位）。标定值 0.2（2026-10-21 由 4e-3 上调，
+         * 依据 docs/04 §8.5 实测）：eps 必须与真实纹理的 log2 方差（~0.5-1.0）
+         * 同量级，否则 a=var/(var+eps)≈1，guided filter 退化为恒等、detail≈0，
+         * range_compress 压掉纹理本身而 detail_gain 空转。上调后真实样张细节
+         * 指标全面改善且强边缘振铃低于 off 档（无可测 halo）；合成「平坦+硬
+         * 台阶」最坏情况下仍有 ~15% 台阶高过冲。
+         */
+        val eps: Float = 0.2f,
         /** base 压缩系数，1.0 = 不压缩 */
         val rangeCompress: Float = 0.88f,
         /** detail 增益，1.0 = 不变 */
@@ -56,7 +63,7 @@ object LocalToneMapping {
         "wechat" -> Params(
             // 微信会重压缩：局部对比别做太狠，否则压缩后出块状伪影
             radiusFrac = 1f / 40f,
-            eps = 6.0e-3f,
+            eps = 0.15f,
             rangeCompress = 0.92f,
             detailGain = 1.12f,
             blackPoint = 0.0025f,

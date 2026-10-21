@@ -197,13 +197,17 @@ def selftest() -> int:
     return 1
 
 
-def eps_sweep() -> None:
-    """模式 3：扫 guided filter 的 eps，验证「eps 太小导致 detail≈0」的机制猜想。
+def eps_sweep(src_path: str | None = None) -> None:
+    """模式 3：扫 guided filter 的 eps。
 
-    对每个 eps：monkeypatch ltm.params_for_profile 返回自定义参数，走完整 bake，
-    报告等亮度细块局部对比比（相对源）与硬边缘过渡宽度（halo/平滑代理）。
+    无 src_path：合成受控实验（恒定增益 chirp + 干净台阶），验证机制猜想；
+    带 src_path：真实样张扫描，额外报告真实强边缘的振铃能量（halo 代理）。
     """
     from uhdr import ltm
+
+    if src_path:
+        _eps_sweep_real(src_path)
+        return
 
     w, h = 768, 512
     xx = np.mgrid[0:h, 0:w][1].astype(np.float32)
@@ -282,18 +286,83 @@ def eps_sweep() -> None:
     print("两者同时满足的 eps 才是可用标定值。")
 
 
+def _eps_sweep_real(src_path: str) -> None:
+    """真实样张 eps 扫描：细节指标 + 真实强边缘振铃能量（halo 代理）。
+
+    振铃代理：取源图 |梯度| 前 0.1% 的像素为强边缘掩码（±3px 膨胀），
+    统计这些位置亮度二阶差分的中位数。off 档在边缘处近似单调过渡（二阶差分≈0），
+    LTM 若在边缘产生过冲/振铃，该值会显著上升——比合成台阶更接近真实风险。
+    """
+    from uhdr import ltm
+
+    source = vivid_source.parse_file(src_path)
+    primary = Image.open(io.BytesIO(source.primary_jpeg)).convert("RGB")
+    ya = luma(np.asarray(primary, np.float32))
+    h, w = ya.shape
+    lc4_src, lc16_src = local_contrast_median(ya, 4), local_contrast_median(ya, 16)
+    hf_src = hf_energy(ya)
+
+    # 强边缘掩码：源图梯度前 0.1%，膨胀 ±3px
+    gx = np.abs(np.diff(ya, axis=1))
+    gy = np.abs(np.diff(ya, axis=0))
+    g = np.zeros_like(ya)
+    g[:, 1:] = np.maximum(g[:, 1:], gx)
+    g[1:, :] = np.maximum(g[1:, :], gy)
+    mask = g >= np.percentile(g, 99.9)
+    dilated = mask.copy()
+    for s in range(-3, 4):
+        dilated |= np.roll(mask, s, axis=0)
+        dilated |= np.roll(mask, s, axis=1)
+    mask = dilated
+
+    def edge_ring(y: np.ndarray) -> float:
+        """强边缘处亮度二阶差分中位数（off≈0；振铃/过冲会抬升）。"""
+        d2x = np.abs(y[:, 2:] - 2 * y[:, 1:-1] + y[:, :-2])
+        d2y = np.abs(y[2:, :] - 2 * y[1:-1, :] + y[:-2, :])
+        d2 = np.zeros_like(y)
+        d2[:, 1:-1] = np.maximum(d2[:, 1:-1], d2x)
+        d2[1:-1, :] = np.maximum(d2[1:-1, :], d2y)
+        return float(np.median(d2[mask])) if mask.any() else 0.0
+
+    def bake_eq(profile: str) -> np.ndarray:
+        yb, _ = bake_to_luma(source, profile, 0.70, primary.size)
+        return np.clip(yb * _ratio(float(ya.mean()), float(yb.mean())), 0, 255)
+
+    off = bake_eq("off")
+    off_ring = edge_ring(off)
+    print(f"源: {src_path}（{w}x{h}）  off 基线: lc4={_ratio(local_contrast_median(off, 4), lc4_src):.3f}  "
+          f"边缘振铃={off_ring:.2f}")
+    print(f"  {'eps':>8} {'lc4':>7} {'lc16':>7} {'HF比':>7} {'振铃':>7} {'振铃/off':>9}")
+
+    orig = ltm.params_for_profile
+    for eps in (0.004, 0.02, 0.05, 0.1, 0.2, 0.5):
+        ltm.params_for_profile = (
+            lambda p, _e=eps: ltm.LtmParams(eps=_e) if p == "local" else orig(p))
+        try:
+            yb = bake_eq("local")
+        finally:
+            ltm.params_for_profile = orig
+        ring = edge_ring(yb)
+        print(f"  {eps:>8.3f} {_ratio(local_contrast_median(yb, 4), lc4_src):>7.3f} "
+              f"{_ratio(local_contrast_median(yb, 16), lc16_src):>7.3f} "
+              f"{_ratio(hf_energy(yb), hf_src):>7.3f} {ring:>7.2f} {ring / max(off_ring, 1e-6):>9.2f}")
+    print("\n解读：lc4/HF比 越高细节保留越好；振铃/off > ~1.3 需警惕可见 halo。")
+    print("（默认值 eps=4e-3 未改动；本表只用于标定决策，见 docs/04 §8）")
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("src", nargs="?", help="HDR 源文件；省略时需 --selftest")
     ap.add_argument("--strength", type=float, default=0.70)
     ap.add_argument("--selftest", action="store_true", help="跑受控合成实验")
-    ap.add_argument("--eps-sweep", action="store_true", help="扫 guided filter 的 eps")
+    ap.add_argument("--eps-sweep", action="store_true",
+                    help="扫 guided filter 的 eps（带 src 时用真实样张）")
     args = ap.parse_args()
 
     if args.selftest:
         return selftest()
     if args.eps_sweep:
-        eps_sweep()
+        eps_sweep(args.src)
         return 0
     if not args.src:
         ap.error("需提供源文件，或使用 --selftest")

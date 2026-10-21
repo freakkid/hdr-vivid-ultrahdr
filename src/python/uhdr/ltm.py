@@ -38,7 +38,13 @@ class LtmParams:
     """局部色调映射参数。
 
     radius_frac      guided filter 半径（相对短边），越大越不容易出 halo，但越慢
-    eps              保边阈值（log2 亮度方差单位），越小越「只在大边缘才保留」
+    eps              保边阈值（log2 亮度方差单位）。**标定值 0.2**（2026-10-21 由
+                     4e-3 上调，依据 docs/04 §8.5 实测）：eps 必须与真实纹理的
+                     log2 方差（~0.5-1.0）同量级，否则 a=var/(var+eps)≈1，
+                     guided filter 退化为恒等、detail≈0，range_compress 会压掉
+                     纹理本身而 detail_gain 空转。上调后在真实样张上细节指标
+                     全面改善且强边缘振铃低于 off 档（无可测 halo）。
+                     注意合成「平坦+硬台阶」最坏情况下仍有 ~15% 台阶高过冲。
     range_compress   base 压缩系数，1.0 = 不压缩（保留原始全局对比）
     detail_gain      detail 增益，1.0 = 不变
     black_point      黑位重锚（线性归一化亮度），用来消除压缩带来的灰雾
@@ -46,7 +52,7 @@ class LtmParams:
     """
 
     radius_frac: float = 1.0 / 48.0
-    eps: float = 4.0e-3
+    eps: float = 0.2
     range_compress: float = 0.88
     detail_gain: float = 1.30
     black_point: float = 0.0020
@@ -61,7 +67,7 @@ def params_for_profile(profile: str) -> LtmParams | None:
         # 微信会重压缩：局部对比别做太狠，否则压缩后出块状伪影
         return LtmParams(
             radius_frac=1.0 / 40.0,
-            eps=6.0e-3,
+            eps=0.15,
             range_compress=0.92,
             detail_gain=1.12,
             black_point=0.0025,
@@ -70,7 +76,7 @@ def params_for_profile(profile: str) -> LtmParams | None:
     # local：观感优先
     return LtmParams(
         radius_frac=1.0 / 48.0,
-        eps=4.0e-3,
+        eps=0.2,
         range_compress=0.88,
         detail_gain=1.32,
         black_point=0.0020,
