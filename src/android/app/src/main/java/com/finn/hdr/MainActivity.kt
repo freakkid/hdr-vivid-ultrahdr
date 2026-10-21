@@ -9,6 +9,7 @@ import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import androidx.activity.ComponentActivity
@@ -31,6 +32,8 @@ class MainActivity : ComponentActivity() {
     private lateinit var shareBaked: Button
     private lateinit var shareHdr: Button
     private lateinit var profileSpinner: Spinner
+    private lateinit var strengthLabel: TextView
+    private lateinit var strengthSeek: SeekBar
     private var bakedFile: File? = null
     private var hdrFile: File? = null
 
@@ -40,6 +43,13 @@ class MainActivity : ComponentActivity() {
         "wechat" to "微信分享（wechat：克制映射+重压缩余量）",
         "off" to "仅全局映射（off：旧行为，A/B 对照）",
     )
+
+    /** 强度滑杆映射：progress 0..100 → strength 0.30..1.00（默认 0.70）。 */
+    private val strengthMin = 0.30f
+    private val strengthMax = 1.00f
+
+    private fun strengthFromProgress(p: Int): Float =
+        strengthMin + (strengthMax - strengthMin) * (p / 100f)
 
     private val pickImage =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
@@ -89,9 +99,30 @@ class MainActivity : ComponentActivity() {
             )
         }
 
+        strengthLabel = TextView(this).apply {
+            textSize = 12f
+            text = "烘焙强度：0.70（1.0 = 完全按元数据恢复 HDR）"
+        }
+        strengthSeek = SeekBar(this).apply {
+            max = 100
+            // 默认 0.70（docs/04 §7.2 目视定档）
+            progress = Math.round((0.70f - strengthMin) / (strengthMax - strengthMin) * 100)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                    strengthLabel.text =
+                        "烘焙强度：${"%.2f".format(strengthFromProgress(progress))}" +
+                        "（1.0 = 完全按元数据恢复 HDR）"
+                }
+                override fun onStartTrackingTouch(sb: SeekBar) {}
+                override fun onStopTrackingTouch(sb: SeekBar) {}
+            })
+        }
+
         val scroll = ScrollView(this).apply { addView(logView) }
         root.addView(pickButton)
         root.addView(profileSpinner)
+        root.addView(strengthLabel)
+        root.addView(strengthSeek)
         root.addView(shareBaked)
         root.addView(shareHdr)
         root.addView(
@@ -114,6 +145,7 @@ class MainActivity : ComponentActivity() {
         shareBaked.isEnabled = false
         shareHdr.isEnabled = false
         val profile = profiles[profileSpinner.selectedItemPosition].first
+        val strength = strengthFromProgress(strengthSeek.progress)
 
         Thread {
             val log = StringBuilder()
@@ -140,12 +172,12 @@ class MainActivity : ComponentActivity() {
                 // ---------- 1) 烘焙：普通 JPEG，HDR 效果已压进去 ----------
                 log.appendLine()
                 log.appendLine("— 烘焙为普通图 —")
-                log.appendLine("档位：$profile")
+                log.appendLine("档位：$profile  强度：${"%.2f".format(strength)}")
                 val base = decodeScaled(src.sdrJpeg, 2048)
                 val gm = decodeScaled(src.gainMapJpeg!!, 2048)
                 val (baked, stats) = HdrBaker.bake(
                     base, gm, src.meta,
-                    HdrBaker.Options(profile = profile),
+                    HdrBaker.Options(profile = profile, strength = strength),
                 )
                 log.appendLine("尺寸：${stats.outSize.first}x${stats.outSize.second}")
                 log.appendLine("HDR 峰值：${"%.2f".format(stats.hdrPeak)}x  "

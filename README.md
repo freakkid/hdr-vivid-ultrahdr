@@ -14,7 +14,7 @@ Android 源码目录较深（`src/android/app/src/main/java/com/finn/hdr/`），
 
 | 模块 | 文件 | 行数 |
 |---|---|---|
-| 入口界面（选图 → 双轨导出 + profile 选择） | [MainActivity.kt](src/android/app/src/main/java/com/finn/hdr/MainActivity.kt) | 224 |
+| 入口界面（选图 → 双轨导出 + profile/强度选择） | [MainActivity.kt](src/android/app/src/main/java/com/finn/hdr/MainActivity.kt) | 256 |
 | **HDR 源解析**（ISO 21496-1 / XMP / CUVA 判定） | [HdrSourceParser.kt](src/android/app/src/main/java/com/finn/hdr/HdrSourceParser.kt) | 326 |
 | **ISO 21496-1 元数据** | [IsoGainMap.kt](src/android/app/src/main/java/com/finn/hdr/IsoGainMap.kt) | 129 |
 | 增益图几何变换 | [GainMapGeometry.kt](src/android/app/src/main/java/com/finn/hdr/GainMapGeometry.kt) | 110 |
@@ -28,7 +28,7 @@ Android 源码目录较深（`src/android/app/src/main/java/com/finn/hdr/`），
 | JNI 实现（API-4） | [uhdr_jni.cpp](src/android/app/src/main/cpp/uhdr_jni.cpp) | 184 |
 | 构建配置 | [app/build.gradle.kts](src/android/app/build.gradle.kts) ｜ [CMakeLists.txt](src/android/app/src/main/cpp/CMakeLists.txt) | — |
 
-合计 **Kotlin 1859 行 + C++ 184 行**，产物 `app-debug.apk` 2.2 MB。
+合计 **Kotlin 1891 行 + C++ 184 行**，产物 `app-debug.apk` 2.2 MB。
 
 > `src/android/local.properties` 是唯一未入库的文件：它记录本机 SDK 绝对路径，
 > 每台机器不同，已由 `.gitignore` 排除（Android 项目通行做法）。缺它时构建会提示
