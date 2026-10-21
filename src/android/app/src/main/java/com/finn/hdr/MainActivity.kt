@@ -51,10 +51,50 @@ class MainActivity : ComponentActivity() {
     private fun strengthFromProgress(p: Int): Float =
         strengthMin + (strengthMax - strengthMin) * (p / 100f)
 
+    /**
+     * 三条选图通道，按可用性依次退化。
+     * Photo Picker（Android 13+ 的系统组件）在容器环境（如鸿蒙卓易通）里可能不存在，
+     * 一旦缺失就必须能掉到传统文件选择器，否则用户只会看到一个报错弹窗。
+     */
     private val pickImage =
         registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
-            if (uri != null) handle(uri)
+            if (uri != null) handle(uri) else publish("已取消选择")
         }
+
+    private val pickDocument =
+        registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+            if (uri != null) handle(uri) else publish("已取消选择")
+        }
+
+    private val pickContent =
+        registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
+            if (uri != null) handle(uri) else publish("已取消选择")
+        }
+
+    /** step: 0=系统相册 1=文件选择器(SYSTEM) 2=GetContent */
+    private fun openPicker(step: Int = 0) {
+        val label = when (step) {
+            0 -> "系统相册"
+            1 -> "文件选择器"
+            else -> "内容选择器"
+        }
+        try {
+            when (step) {
+                0 -> pickImage.launch(
+                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                )
+                1 -> pickDocument.launch(arrayOf("image/*"))
+                else -> pickContent.launch("image/*")
+            }
+        } catch (t: Throwable) {
+            publish(
+                "$label 不可用：${t.javaClass.simpleName}\n"
+                    + "${t.message ?: ""}\n"
+                    + if (step < 2) "正在尝试下一条通道…" else "三条通道都失败：设备缺少可用的文件选择器。"
+            )
+            if (step < 2) openPicker(step + 1)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -66,11 +106,13 @@ class MainActivity : ComponentActivity() {
 
         val pickButton = Button(this).apply {
             text = "选择 HDR 照片并处理"
-            setOnClickListener {
-                pickImage.launch(
-                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                )
-            }
+            setOnClickListener { openPicker(0) }
+        }
+
+        // 容器环境下系统相册常常不可用，给一个显式入口，不用等自动退化
+        val pickFileButton = Button(this).apply {
+            text = "用文件管理器选择（相册不可用时点这个）"
+            setOnClickListener { openPicker(1) }
         }
 
         shareBaked = Button(this).apply {
@@ -120,6 +162,7 @@ class MainActivity : ComponentActivity() {
 
         val scroll = ScrollView(this).apply { addView(logView) }
         root.addView(pickButton)
+        root.addView(pickFileButton)
         root.addView(profileSpinner)
         root.addView(strengthLabel)
         root.addView(strengthSeek)
@@ -150,8 +193,10 @@ class MainActivity : ComponentActivity() {
         Thread {
             val log = StringBuilder()
             try {
+                // 容器环境里 URI 的 authority 往往是排查关键，先打出来
+                log.appendLine("URI：${uri.scheme}://${uri.authority}")
                 val bytes = contentResolver.openInputStream(uri)?.use { it.readBytes() }
-                    ?: error("无法读取文件")
+                    ?: error("无法读取文件（openInputStream 返回 null）")
                 log.appendLine("源文件：${bytes.size} B")
 
                 val src = HdrSourceParser.parse(bytes)
