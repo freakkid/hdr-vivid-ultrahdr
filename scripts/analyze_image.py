@@ -87,11 +87,50 @@ def analyze_jpeg(path: str) -> int:
     return 0
 
 
+# ---- nclx / 传输特性语义表 ----
+# 这些数字来自 ISO/IEC 23001-8 (CICP)。HDR 的判据不只有增益图：
+# 主图本身编码成 PQ/HLG、或色域是 BT.2020，也说明它是 HDR 内容。
+_TRANSFER = {
+    1: "BT.709（SDR）", 2: "未指定", 4: "gamma 2.2（SDR）", 5: "gamma 2.8（SDR）",
+    6: "BT.601（SDR）", 7: "SMPTE 240M（SDR）", 8: "线性",
+    13: "sRGB（SDR）", 14: "BT.2020 10bit（SDR）", 15: "BT.2020 12bit（SDR）",
+    16: "PQ / SMPTE ST 2084（HDR）",
+    18: "HLG / ARIB STD-B67（HDR）",
+}
+_PRIMARIES = {
+    1: "BT.709", 4: "BT.470M", 5: "BT.470BG", 6: "BT.601", 7: "SMPTE 240M",
+    8: "通用胶片", 9: "BT.2020（广色域）",
+    11: "SMPTE RP 431-2（DCI-P3）",
+    12: "SMPTE EG 432-1（Display P3）",
+}
+_GAIN_URNS = {
+    "urn:iso:std:iso:ts:21496:-1": "ISO 21496-1 增益图（标准）",
+    "urn:com:apple:photo:2020:aux:hdrgainmap": "Apple HDR 增益图",
+    "urn:com:huawei:photo:aux:hdrgainmap": "华为 HDR 增益图（推测 URN）",
+    "urn:com:huawei:hdr:aux:gainmap": "华为 HDR 增益图（推测 URN，备选）",
+}
+
+
+def _stat_of(im) -> str:
+    """给 aux 图一个数值画像，用来判断它像不像增益图。"""
+    try:
+        import numpy as np
+        a = np.asarray(im, dtype=np.float32)
+        lo, hi = float(a.min()), float(a.max())
+        mean = float(a.mean())
+        med = float(np.median(a))
+        return f"min={lo:.0f} max={hi:.0f} mean={mean:.1f} median={med:.0f}"
+    except Exception:  # noqa: BLE001
+        return "(无 numpy，跳过统计)"
+
+
 def analyze_heif(path: str, out_dir: str | None) -> int:
     try:
         import pillow_heif
     except ImportError:
         print("缺少 pillow-heif：pip install pillow-heif")
+        print("  注意：阿里云 index 没有该包，用清华源")
+        print("  pip install pillow-heif -i https://pypi.tuna.tsinghua.edu.cn/simple")
         return 2
 
     with open(path, "rb") as f:
@@ -102,52 +141,87 @@ def analyze_heif(path: str, out_dir: str | None) -> int:
         print(f"  {typ}  @{off}  {size:,} B")
 
     pillow_heif.register_heif_opener()
-    heif = pillow_heif.open_heif(path, convert_hdr_to_8bit=False)
+    try:
+        hf = pillow_heif.open_heif(path)
+    except Exception as e:  # noqa: BLE001
+        print(f"open_heif 失败: {type(e).__name__}: {e}")
+        return 1
 
-    print(f"主图: {heif.size[0]}x{heif.size[1]}  mode={heif.mode}")
-    info = getattr(heif, "info", {}) or {}
-    print(f"info 键: {sorted(info.keys())}")
+    im0 = hf[0]
+    info = im0.info or {}
+    print(f"主图: {im0.size[0]}x{im0.size[1]}  mode={im0.mode}  "
+          f"bit_depth={info.get('bit_depth')}  chroma={info.get('chroma')}")
 
+    # ---- 色彩元数据：第二条 HDR 判据
+    nclx = info.get("nclx_profile") or {}
+    tc = nclx.get("transfer_characteristics")
+    cp = nclx.get("color_primaries")
+    if nclx:
+        print(f"色彩: primaries={cp} {_PRIMARIES.get(cp, '?')}  "
+              f"transfer={tc} {_TRANSFER.get(tc, '?')}  "
+              f"matrix={nclx.get('matrix_coefficients')}  "
+              f"full_range={nclx.get('full_range_flag')}")
+
+    # ---- 辅助图
     aux = info.get("aux") or {}
+    aux_report = []
     if not aux:
-        print("辅助图: 无（该文件没有增益图 / 深度图 / 缩略图 aux）")
+        print("辅助图: 无")
     else:
-        print("辅助图 URN:")
+        print(f"辅助图: {sum(len(v) for v in aux.values())} 张")
         for urn, ids in aux.items():
-            print(f"  {urn}  → item ids {ids}")
-
-    # 已知的增益图 URN
-    gain_urns = {
-        "urn:iso:std:iso:ts:21496:-1": "ISO 21496-1 增益图（标准）",
-        "urn:com:apple:photo:2020:aux:hdrgainmap": "Apple HDR 增益图",
-        "urn:com:huawei:photo:aux:hdrgainmap": "华为 HDR 增益图",
-        "urn:com:huawei:hdr:aux:gainmap": "华为 HDR 增益图（备选 URN）",
-    }
-    hit = [(u, d) for u, d in gain_urns.items() if u in aux]
-
-    if not hit:
-        print("\n结论：有 aux 但没有已登记的增益图 URN —— 需要按 ids 逐个试探解码。")
-    else:
-        for urn, desc in hit:
-            print(f"\n结论：发现增益图 —— {desc}")
-            print(f"  URN: {urn}")
-
-    if out_dir and aux:
-        os.makedirs(out_dir, exist_ok=True)
-        for urn, ids in aux.items():
-            for idx, iid in enumerate(ids):
+            desc = _GAIN_URNS.get(urn, "未登记 URN")
+            print(f"  URN: {urn}  → ids {ids}   ({desc})")
+            for iid in ids:
                 try:
-                    img = heif.get_aux_image(iid) if hasattr(heif, "get_aux_image") else None
+                    aim = im0.get_aux_image(iid).to_pillow()
+                    print(f"    #{iid}  {aim.size}  mode={aim.mode}  {_stat_of(aim)}")
+                    aux_report.append((urn, iid, aim))
                 except Exception as e:  # noqa: BLE001
-                    print(f"  取 aux {iid} 失败: {e}")
-                    continue
-                if img is None:
-                    print(f"  取 aux {iid} 返回 None（API 可能不支持）")
-                    continue
-                safe = urn.replace(":", "_").replace("/", "_")[:60]
-                p = os.path.join(out_dir, f"aux_{safe}_{idx}.png")
-                img.save(p)
-                print(f"  已导出 {p}  {img.size}")
+                    print(f"    #{iid}  取图失败: {type(e).__name__}: {e}")
+
+    # ---- 结论
+    print("\n" + "=" * 60)
+    gain_hits = [u for u in aux if u in _GAIN_URNS]
+    hdr_by_codec = tc in (16, 18) or cp == 9
+    if gain_hits:
+        for u in gain_hits:
+            print(f"结论：**有增益图** —— {_GAIN_URNS[u]}")
+            print(f"      URN: {u}")
+        print("      → 可以做 HDR 烘焙（需按该 URN 的语义解释增益值）")
+    elif hdr_by_codec:
+        print("结论：**没有增益图，但主图本身是 HDR 编码**")
+        if tc in (16, 18):
+            print(f"      传输特性 = {_TRANSFER[tc]}，是 PQ/HLG 直接编码的 HDR")
+        if cp == 9:
+            print("      色域 = BT.2020（广色域）")
+        print("      → 需要 PQ/HLG → 线性的逆变换，不是加增益图；")
+        print("        这条路径我们尚未实现（见 HANDOVER §3.4 路线 A）")
+    elif aux:
+        print("结论：有辅助图，但没有已登记的增益图 URN —— 按上面 ids 逐个试探")
+    else:
+        print("结论：**普通 SDR HEIC**，无增益图、无 HDR 编码")
+        print("      → 只需主图解码，不做增益图处理")
+
+    # ---- 导出
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(path))[0]
+        try:
+            base = im0.to_pillow().convert("RGB")
+            bp = os.path.join(out_dir, f"{stem}_base.jpg")
+            base.save(bp, quality=95, subsampling=0)
+            print(f"\n已导出主图: {bp}  {base.size}")
+        except Exception as e:  # noqa: BLE001
+            print(f"导出主图失败: {type(e).__name__}: {e}")
+        for urn, iid, aim in aux_report:
+            safe = urn.replace(":", "_").replace("/", "_")[:50]
+            ap = os.path.join(out_dir, f"{stem}_aux{iid}_{safe}.png")
+            try:
+                aim.save(ap)
+                print(f"已导出 aux: {ap}  {aim.size} mode={aim.mode}")
+            except Exception as e:  # noqa: BLE001
+                print(f"导出 aux #{iid} 失败: {type(e).__name__}: {e}")
     return 0
 
 
