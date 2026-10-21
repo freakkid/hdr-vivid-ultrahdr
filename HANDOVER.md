@@ -12,6 +12,7 @@
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG |
 | 到哪一步了 | Ultra HDR 主链路与烘焙链路（HDR → 普通 JPEG，含 App 端局部色调映射）均已实现并通过自动化验证；本机构建环境已就绪。剩下的全是真机实测类事项（§3） |
 | 明天第一件事 | 打开 `out/visual/` 目视 LTM 三档效果（§3.1，材料已备好）；导出链路与 HDRCapacityMax 已在模拟器验证（docs/02 §2.8） |
+| 部署到手机 | 用户已换成 **HarmonyOS NEXT（纯血鸿蒙）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**注意：早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 仓库 | `git@github.com:freakkid/hdr-vivid-ultrahdr.git`（私有），分支 `main` |
 | 最新提交 | 见 `git log --oneline -1` |
 
@@ -28,10 +29,12 @@ hdr-vivid-ultrahdr/
 │   ├── 01-design.md         主设计 A–H（结论/格式/管线/代码/微信/测试/风险/待核实）
 │   ├── 02-verification.md   已验证事实 + 真机排障全过程（§2.7）
 │   ├── 03-toolchain-setup.md 构建环境安装（dl.google.com 不可达方案）
-│   └── 04-HANDOFF-bake.md   烘焙链路算法决策记录
+│   ├── 04-HANDOFF-bake.md   烘焙链路算法决策记录
+│   └── 05-harmonyos-zhuoyitong.md 鸿蒙 NEXT 装 APK（卓易通容器）完整步骤
 ├── src/android/             ★ Android 实现（交付物）
 ├── src/python/uhdr/         容器参考实现与校验器（工具链，不进 APK）
 ├── src/harmony/, src/ets/   HarmonyOS/ArkTS 链路（骨架，未真机验证）
+├── web/index.html           网页版原型 —— **未完成，已冻结，不要投入**（仅解析部分可复用）
 ├── scripts/                 工程自检、工具链安装、一键提交
 ├── tests/                   回归测试 + 双实现对照 + 实测矩阵模板
 └── out/                     产物：APK、截图、样例
@@ -215,6 +218,17 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 | **免打扰拦截授权弹窗** | `unauthorized`，换 adbkey 也不弹 | 关免打扰，或「撤销 USB 调试授权」后重插 |
 | MSYS 路径改写 | `adb pull` 报 `...PortableGit/sdcard/...` | 命令前加 `MSYS_NO_PATHCONV=1` |
 | 后台被回收 | picker 占前台后 App 被杀，无崩溃日志 | 手动操作；后续可做「导出后立即通知」保持前台优先级 |
+
+### 5.2b 真机（HarmonyOS NEXT，2026-10-21 起）
+
+| 坑 | 现象 | 解 |
+|---|---|---|
+| **误判「装不了」** | 曾据「NEXT 只认 .hap」断言 APK 无法安装 | **错**。NEXT 原生不解析 APK，但可装进**卓易通**容器跑；华为官方支持页也有该渠道说明。详见 `docs/05-harmonyos-zhuoyitong.md` |
+| 只有 HDC，没有 ADB | `adb devices` 永远为空；设备管理器只有 `HDC Device` | 正常现象。PC 端要通 HDC 得装 DevEco Studio，装 APK 不需要它 |
+| 也没有 MTP | USB 选「传输文件」后 `WPD` 设备列表仍为空 | 本机缺鸿蒙 MTP 驱动；改用微信/QQ/网盘传文件 |
+| 微信接收改名 | 文件名被加 `.1`，点击无法安装 | 文件管理 → 重命名，去掉 `.1` 恢复 `.apk`（华为官方说明） |
+| 容器内选图受限 | 卓易通有独立文件系统，系统相册未必可见 | 先把照片导入容器（`ShareData/ShareFile`）再选图 |
+| debug 签名被拦 | 容器提示签名校验失败 | 装 Apktool M → 「删除签名验证」生成 `_kill.apk` 再装 |
 
 ### 5.3 格式
 

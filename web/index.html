@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111315">
+<title>HDR 烘焙 · 把增益效果压进普通图</title>
+<style>
+  :root{
+    --bg:#111315; --panel:#191c1f; --line:#2a2f34; --text:#e8ebee;
+    --dim:#9aa4ad; --accent:#4c9aff; --ok:#39c07a; --warn:#e5a13a; --err:#e5544b;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--text);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"HarmonyOS Sans SC","PingFang SC","Microsoft YaHei",sans-serif}
+  body{padding:16px 14px calc(28px + env(safe-area-inset-bottom))}
+  h1{font-size:19px;margin:0 0 4px;font-weight:600;letter-spacing:.2px}
+  .sub{color:var(--dim);font-size:13px;margin-bottom:16px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+  .row{display:flex;align-items:center;gap:10px;margin:10px 0}
+  .row:first-child{margin-top:0}
+  label.k{color:var(--dim);font-size:13px;flex:0 0 74px}
+  input[type=range]{flex:1;accent-color:var(--accent);height:26px}
+  .val{font-variant-numeric:tabular-nums;min-width:42px;text-align:right;font-size:13px}
+  .seg{display:flex;gap:6px;flex:1}
+  .seg button{flex:1;padding:7px 4px;border-radius:9px;border:1px solid var(--line);
+    background:#14171a;color:var(--dim);font-size:13px;font-weight:500}
+  .seg button.on{background:#1f3a5c;border-color:#2f5c8f;color:#cfe3ff}
+  .btn{display:block;width:100%;padding:14px;border-radius:12px;border:0;
+    font-size:16px;font-weight:600;color:#fff;background:var(--accent)}
+  .btn:disabled{opacity:.42}
+  .btn.ghost{background:#202529;color:var(--text);border:1px solid var(--line)}
+  .hide{display:none!important}
+  .log{font:12px/1.65 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;
+    color:var(--dim);max-height:230px;overflow:auto;word-break:break-all}
+  .log .ok{color:var(--ok)} .log .warn{color:var(--warn)} .log .err{color:var(--err)}
+  .kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:13px}
+  .kv dt{color:var(--dim)} .kv dd{margin:0;font-variant-numeric:tabular-nums}
+  .preview{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .preview figure{margin:0}
+  .preview img{width:100%;display:block;border-radius:9px;background:#0b0d0e}
+  .preview figcaption{font-size:11px;color:var(--dim);text-align:center;padding-top:5px}
+  .tip{color:var(--dim);font-size:12px;margin-top:9px;line-height:1.6}
+  .badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;
+    background:#1f3a5c;color:#cfe3ff;margin-left:6px;vertical-align:2px}
+  .badge.no{background:#3a2222;color:#ffc9c4}
+  a.dl{text-decoration:none}
+</style>
+</head>
+<body>
+
+<h1>HDR 烘焙<span class="badge" id="engine">web</span></h1>
+<div class="sub">把 HDR 照片的增益效果压进一张普通 JPEG —— 微信、任何手机都能直接看到提亮效果，不依赖 HDR 屏幕。</div>
+
+<div class="card">
+  <input type="file" id="file" accept="image/*" class="hide">
+  <button class="btn" id="pick">选择 HDR 照片</button>
+  <div class="tip" id="pickTip">支持 ISO 21496-1（纯血鸿蒙/安卓新机）、Google Ultra HDR（XMP）、华为 HDR Vivid（CUVA）三种增益图载体。</div>
+</div>
+
+<div class="card hide" id="optCard">
+  <div class="row">
+    <label class="k">强度</label>
+    <input type="range" id="strength" min="0.30" max="1.00" step="0.05" value="0.70">
+    <span class="val" id="strengthVal">0.70</span>
+  </div>
+  <div class="row">
+    <label class="k">档位</label>
+    <div class="seg" id="profileSeg">
+      <button data-p="local" class="on">本地</button>
+      <button data-p="wechat">微信</button>
+      <button data-p="off">仅全局</button>
+    </div>
+  </div>
+  <div class="row">
+    <label class="k">长边</label>
+    <div class="seg" id="edgeSeg">
+      <button data-e="1600">1600</button>
+      <button data-e="2048" class="on">2048</button>
+      <button data-e="0">原始</button>
+    </div>
+  </div>
+  <div class="tip">「微信」档会压低局部对比并提高压缩率，为平台二次压缩留余量。「仅全局」不做局部色调映射，用于对照。</div>
+</div>
+
+<div class="card" id="statusCard">
+  <div class="log" id="log">等待选择照片…</div>
+</div>
+
+<div class="card hide" id="resultCard">
+  <dl class="kv" id="facts"></dl>
+  <div class="preview" style="margin-top:12px">
+    <figure><img id="imgBefore" alt="原 SDR"><figcaption>原 SDR 主图</figcaption></figure>
+    <figure><img id="imgAfter" alt="烘焙后"><figcaption>烘焙后</figcaption></figure>
+  </div>
+  <div style="margin-top:14px">
+    <a class="dl" id="dl" download="baked.jpg"><button class="btn">保存烘焙图</button></a>
+  </div>
+  <div class="tip" id="dlTip"></div>
+</div>
+
+<script>
+"use strict";
+
+/* =========================================================================
+   1. 字节级工具
+   ========================================================================= */
+
+const ISO_SIG = new TextEncoder().encode("urn:iso:std:iso:ts:21496:-1\u0000");
+const XMP_SIG = new TextEncoder().encode("http://ns.adobe.com/xap/1.0/\u0000");
+const MPF_SIG = new TextEncoder().encode("MPF\u0000");
+
+const $ = (s) => document.querySelector(s);
+const logBox = $("#log");
+
+function log(msg, cls) {
+  const line = document.createElement("div");
+  if (cls) line.className = cls;
+  line.textContent = msg;
+  logBox.appendChild(line);
+  logBox.scrollTop = logBox.scrollHeight;
+}
+function clearLog() { logBox.textContent = ""; }
+
+function startsWithAt(u8, at, sig) {
+  if (at + sig.length > u8.length) return false;
+  for (let i = 0; i < sig.length; i++) if (u8[at + i] !== sig[i]) return false;
+  return true;
+}
+function i32be(u8, o) {
+  return (u8[o] << 24) | (u8[o + 1] << 16) | (u8[o + 2] << 8) | u8[o + 3];
+}
+function u32be(u8, o) {
+  return ((u8[o] << 24) >>> 0) + ((u8[o + 1] << 16) | (u8[o + 2] << 8) | u8[o + 3]);
+}
+
+/* =========================================================================
+   2. JPEG 段结构解析
+   —— 与 Kotlin / Python 同构：扫描循环边界必须是 pos+1，
+      因为增益图的 FFD9 常常正好贴在文件最后两个字节。
+   ========================================================================= */
+
+function imageEnd(u8, start) {
+  let pos = start + 2;
+  while (pos + 1 < u8.length) {
+    if (u8[pos] !== 0xFF) { pos++; continue; }
+    const m = u8[pos + 1];
+    if (m === 0xFF) { pos++; continue; }              // 填充字节
+    if (m === 0xD9) return pos + 2;                   // EOI
+    if (m === 0x01 || (m >= 0xD0 && m <= 0xD8)) { pos += 2; continue; }  // 无长度段
+    if (pos + 3 >= u8.length) return null;
+    const len = (u8[pos + 2] << 8) | u8[pos + 3];
+    if (len < 2) return null;
+    if (m === 0xDA) {                                  // SOS：跳过熵编码数据
+      pos += 2 + len;
+      while (pos + 1 < u8.length) {
+        if (u8[pos] === 0xFF) {
+          const n = u8[pos + 1];
+          if (n !== 0x00 && !(n >= 0xD0 && n <= 0xD7) && n !== 0xFF) break;
+          pos += 2;
+          continue;
+        }
+        pos++;
+      }
+      continue;
+    }
+    pos += 2 + len;
+  }
+  return null;
+}
+
+function findImages(u8) {
+  const out = [];
+  let pos = 0;
+  while (pos + 1 < u8.length) {
+    if (u8[pos] === 0xFF && u8[pos + 1] === 0xD8) {
+      const end = imageEnd(u8, pos);
+      if (end == null) break;
+      out.push([pos, end]);
+      pos = end;
+    } else pos++;
+  }
+  return out;
+}
+
+function headerSegments(u8, start, end) {
+  const segs = [];
+  let pos = start + 2;
+  while (pos + 3 < end) {
+    if (u8[pos] !== 0xFF) { pos++; continue; }
+    const m = u8[pos + 1];
+    if (m === 0xD9 || m === 0xDA || m === 0xFF) break;
+    const len = (u8[pos + 2] << 8) | u8[pos + 3];
+    if (len < 2) break;
+    segs.push({
+      marker: m,
+      start: pos,
+      payloadStart: pos + 4,
+      payloadEnd: pos + 2 + len,
+      end: pos + 2 + len,
+    });
+    pos += 2 + len;
+  }
+  return segs;
+}
+
+/* =========================================================================
+   3. 元数据解析：ISO 21496-1 / XMP hdrgm / MPF / CUVA
+   ========================================================================= */
+
+function parseIsoApp2(u8, payloadStart, payloadEnd) {
+  if (!startsWithAt(u8, payloadStart, ISO_SIG)) return null;
+  const bodyStart = payloadStart + ISO_SIG.length;
+  const bodyLen = payloadEnd - bodyStart;
+  // 主图侧可能只有 4 字节 version 块，完整参数写在增益图自身的 APP2 里
+  if (bodyLen < 5 + 8) return { versionOnly: true, values: [] };
+
+  const values = [];
+  for (let k = 0; k < 7; k++) {
+    const at = bodyStart + 5 + k * 8;
+    if (at + 8 > payloadEnd) break;
+    const num = i32be(u8, at);
+    const den = u32be(u8, at + 4);
+    values.push(den === 0 ? 0 : num / den);
+  }
+  return { versionOnly: false, values };
+}
+
+/**
+ * 把 ISO 分数换算为 hdrgm（log2 域）参数。
+ * 实测样本原始值 [0, 2.148, 0, 2.169, 1.0, 0, 0] 与标准字段顺序不符，
+ * 因此做语义合理性校验，不通过则按实测布局回退，并如实记录。
+ */
+function isoToHdrgm(values) {
+  if (!values || values.length < 2) {
+    return { min: 0, max: 2, gamma: 1, offSdr: 1 / 64, offHdr: 1 / 64, note: "参数缺失，回退默认 max=2.0" };
+  }
+  const [minC, maxC, gamma, offSdr, offHdr, capMin, capMax] = values;
+  const plausible =
+    gamma >= 0.1 && gamma <= 4 && maxC >= 1 && minC > 0 && minC <= maxC && capMax >= capMin;
+  if (plausible) {
+    return {
+      min: Math.log2(minC), max: Math.log2(maxC), gamma,
+      offSdr, offHdr,
+      note: `ISO 标准字段顺序（原始值 ${values.map((v) => +v.toFixed(4)).join(", ")}）`,
+    };
+  }
+  const lg = (v) => (v > 0 ? Math.log2(v) : 0);
+  const v0 = values[0], v1 = values[1];
+  if (v0 >= 0 && v0 < 8 && v0 < v1 && v1 <= 8) {
+    return {
+      min: v0, max: v1, gamma: 1, offSdr: 1 / 64, offHdr: 1 / 64,
+      note: `按实测布局回退，前两位当 log2 min/max，gamma 取 1.0（原始值 ${values.map((v) => +v.toFixed(4)).join(", ")}）`,
+      _lg: lg,
+    };
+  }
+  return { min: 0, max: 2, gamma: 1, offSdr: 1 / 64, offHdr: 1 / 64, note: "数值不合理，回退默认 max=2.0" };
+}
+
+function decodeText(u8, start, end) {
+  let s = "";
+  const CH = 8192;
+  for (let i = start; i < end; i += CH) {
+    s += String.fromCharCode.apply(null, u8.subarray(i, Math.min(i + CH, end)));
+  }
+  try { return decodeURIComponent(escape(s)); } catch (e) { return s; }
+}
+
+function parseXmpHdrgm(text) {
+  const pick = (name) => {
+    // 兼容属性式 hdrgm:Xxx="1.0" 与元素式 <hdrgm:Xxx>1.0</hdrgm:Xxx>
+    let m = text.match(new RegExp("hdrgm:" + name + '\\s*=\\s*"([^"]+)"'));
+    if (m) return parseFloat(m[1]);
+    m = text.match(new RegExp("<hdrgm:" + name + ">([^<]+)</hdrgm:" + name + ">"));
+    if (m) return parseFloat(m[1]);
+    return null;
+  };
+  const max = pick("GainMapMax");
+  if (max == null || !isFinite(max)) return null;
+  const min = pick("GainMapMin");
+  const gamma = pick("Gamma");
+  const offSdr = pick("OffsetSDR");
+  const offHdr = pick("OffsetHDR");
+  return {
+    min: min == null ? 0 : min,
+    max,
+    gamma: gamma == null ? 1 : gamma,
+    offSdr: offSdr == null ? 1 / 64 : offSdr,
+    offHdr: offHdr == null ? 1 / 64 : offHdr,
+    note: "XMP hdrgm 字段",
+  };
+}
+
+/** 解析文件，判定容器类型并取出主图 / 增益图 / 增益参数。 */
+function parseSource(u8) {
+  const images = findImages(u8);
+  if (!images.length) {
+    // 不是 JPEG：可能是 HEIC/PNG/WebP
+    if (u8.length > 12 && u8[4] === 0x66 && u8[5] === 0x74 && u8[6] === 0x79 && u8[7] === 0x70) {
+      return { kind: "isobmff" };
+    }
+    return { kind: "not_jpeg" };
+  }
+
+  const [p0, p1] = images[0];
+  const primary = u8.subarray(p0, p1);
+  const segs = headerSegments(u8, p0, p1);
+
+  let isoMain = null, xmpText = null, hasMpf = false;
+  for (const s of segs) {
+    if (s.marker === 0xE1 && startsWithAt(u8, s.payloadStart, XMP_SIG)) {
+      xmpText = decodeText(u8, s.payloadStart + XMP_SIG.length, s.payloadEnd);
+    } else if (s.marker === 0xE2) {
+      if (startsWithAt(u8, s.payloadStart, ISO_SIG)) {
+        isoMain = parseIsoApp2(u8, s.payloadStart, s.payloadEnd);
+      } else if (startsWithAt(u8, s.payloadStart, MPF_SIG)) {
+        hasMpf = true;
+      }
+    }
+  }
+
+  if (images.length === 1) {
+    return { kind: "plain", primary, reason: "单图 JPEG，没有增益图" };
+  }
+
+  const [g0, g1] = images[1];
+  const gainRaw = u8.subarray(g0, g1);
+  const gmSegs = headerSegments(u8, g0, g1);
+
+  // ---- 证据 1：ISO 21496-1 ----
+  if (isoMain) {
+    let meta = null;
+    for (const s of gmSegs) {
+      if (s.marker === 0xE2 && startsWithAt(u8, s.payloadStart, ISO_SIG)) {
+        const gmIso = parseIsoApp2(u8, s.payloadStart, s.payloadEnd);
+        if (gmIso && !gmIso.versionOnly) {
+          meta = isoToHdrgm(gmIso.values);
+          meta.carrier = "ISO 21496-1（取自增益图 APP2）";
+          break;
+        }
+      }
+    }
+    // 有 XMP 时优先用 XMP，语义更明确
+    if (xmpText) {
+      const x = parseXmpHdrgm(xmpText);
+      if (x) { x.carrier = "XMP（同时存在 ISO，优先 XMP）"; meta = x; }
+    }
+    if (!meta) {
+      if (!isoMain.versionOnly) {
+        meta = isoToHdrgm(isoMain.values);
+        meta.carrier = "ISO 21496-1（取自主图 APP2）";
+      } else {
+        meta = isoToHdrgm(null);
+        meta.carrier = "仅 version 块，参数回退默认值";
+      }
+    }
+    return { kind: "iso", primary, gainRaw, meta, container: "ISO Ultra HDR" };
+  }
+
+  // ---- 证据 2：XMP GContainer ----
+  if (xmpText && hasMpf && /Container:Directory|GContainer/.test(xmpText)) {
+    const x = parseXmpHdrgm(xmpText);
+    const meta = x || isoToHdrgm(null);
+    if (!x) meta.carrier = "XMP 缺 hdrgm 参数，回退默认值";
+    return { kind: "xmp", primary, gainRaw, meta, container: "Ultra HDR（XMP）" };
+  }
+
+  // ---- 证据 3：CUVA / 华为 HDR Vivid（副图首段为 APP5）----
+  if (gmSegs.length && gmSegs[0].marker === 0xE5) {
+    return {
+      kind: "cuva", primary, gainRaw,
+      meta: { min: 0, max: 2, gamma: 1, offSdr: 1 / 64, offHdr: 1 / 64, carrier: "CUVA 无 hdrgm 参数，按经验值 2.0" },
+      container: "CUVA / HDR Vivid",
+      warn: "CUVA 增益语义与 hdrgm 不等价，结果可能偏亮或偏灰",
+    };
+  }
+
+  return { kind: "unknown", primary, gainRaw, reason: `存在副图但缺 ISO/XMP/APP5 证据（MPF=${hasMpf}）` };
+}
+
+/* =========================================================================
+   4. 色调映射（与 src/python/uhdr/bake.py + ltm.py 同源）
+   ========================================================================= */
+
+const LUMA_R = 0.2126, LUMA_G = 0.7152, LUMA_B = 0.0722;
+
+function srgbToLinear(c) {
+  return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+}
+function linearToSrgb(c) {
+  if (c <= 0) return 0;
+  if (c >= 1) return 1;
+  return c <= 0.0031308 ? c * 12.92 : 1.055 * Math.pow(c, 1 / 2.4) - 0.055;
+}
+function softKnee(x, knee) {
+  if (knee >= 1) return Math.min(x, 1);
+  if (x <= knee) return x;
+  const span = 1 - knee;
+  return knee + span * (1 - Math.exp(-(x - knee) / span));
+}
+
+/** 盒式模糊：可分离滑动窗口，边界复制。O(n)，float64 累加保精度。 */
+function boxBlur(src, w, h, r) {
+  if (r <= 0) return src.slice();
+  const tmp = new Float32Array(w * h);
+  const out = new Float32Array(w * h);
+  const inv = 1 / (2 * r + 1);
+
+  // 水平
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let sum = 0;
+    for (let k = -r; k <= r; k++) sum += src[row + Math.min(w - 1, Math.max(0, k))];
+    for (let x = 0; x < w; x++) {
+      tmp[row + x] = sum * inv;
+      const add = Math.min(w - 1, x + r + 1);
+      const sub = Math.max(0, x - r);
+      sum += src[row + add] - src[row + sub];
+    }
+  }
+  // 垂直
+  for (let x = 0; x < w; x++) {
+    let sum = 0;
+    for (let k = -r; k <= r; k++) sum += tmp[Math.min(h - 1, Math.max(0, k)) * w + x];
+    for (let y = 0; y < h; y++) {
+      out[y * w + x] = sum * inv;
+      const add = Math.min(h - 1, y + r + 1);
+      const sub = Math.max(0, y - r);
+      sum += tmp[add * w + x] - tmp[sub * w + x];
+    }
+  }
+  return out;
+}
+
+/** 自引导滤波：a = var/(var+eps)，强边缘 a→1，滤波退化为恒等，从根上抑制 halo。 */
+function guidedFilter(guide, w, h, r, eps) {
+  const mI = boxBlur(guide, w, h, r);
+  const sq = new Float32Array(w * h);
+  for (let i = 0; i < sq.length; i++) sq[i] = guide[i] * guide[i];
+  const mII = boxBlur(sq, w, h, r);
+
+  const a = new Float32Array(w * h);
+  const b = new Float32Array(w * h);
+  for (let i = 0; i < a.length; i++) {
+    const v = Math.max(mII[i] - mI[i] * mI[i], 0);
+    const ai = v / (v + eps);
+    a[i] = ai;
+    b[i] = mI[i] * (1 - ai);
+  }
+  const mA = boxBlur(a, w, h, r);
+  const mB = boxBlur(b, w, h, r);
+  const out = new Float32Array(w * h);
+  for (let i = 0; i < out.length; i++) out[i] = mA[i] * guide[i] + mB[i];
+  return out;
+}
+
+/** log2 域高光软膝：单调收敛到 0（= 白点），在起点处一阶导连续。 */
+function compressHighlights(x, startLinear) {
+  const k = Math.log2(Math.max(startLinear, 1e-4));
+  const out = new Float32Array(x.length);
+  if (k >= 0) {
+    for (let i = 0; i < x.length; i++) out[i] = Math.min(x[i], 0);
+    return out;
+  }
+  const s = -k;
+  for (let i = 0; i < x.length; i++) {
+    const v = x[i];
+    out[i] = v > k ? k + s * (1 - Math.exp(-(v - k) / s)) : v;
+  }
+  return out;
+}
+
+const PROFILES = {
+  local: { radiusFrac: 1 / 48, eps: 0.2, rangeCompress: 0.88, detailGain: 1.32, blackPoint: 0.0020, highlightStart: 0.78, quality: 0.95 },
+  wechat: { radiusFrac: 1 / 40, eps: 0.15, rangeCompress: 0.92, detailGain: 1.12, blackPoint: 0.0025, highlightStart: 0.72, quality: 0.88 },
+  off: null,
+};
+
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a = (a + 0x6D2B79F5) >>> 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * 核心：把 SDR 主图 + 增益图合成为显示用 SDR。
+ * @param {Uint8ClampedArray} baseRGBA 主图像素（目标尺寸）
+ * @param {Uint8ClampedArray} gmRGBA   增益图像素（目标尺寸）
+ * @param {object} meta  {min,max,gamma,offSdr,offHdr}
+ * @param {object} opt   {strength, profile, saturation, contrast, knee}
+ */
+function bakePixels(baseRGBA, gmRGBA, meta, opt, onStage) {
+  const w = opt.width, h = opt.height;
+  const n = w * h;
+
+  // ---- 1) 拆通道 + sRGB→线性；增益图取 Rec.601 亮度后 /255（不做线性化，与 Python 一致）
+  const r = new Float32Array(n), g = new Float32Array(n), b = new Float32Array(n);
+  const rec = new Float32Array(n);
+  for (let i = 0, p = 0; i < n; i++, p += 4) {
+    r[i] = srgbToLinear(baseRGBA[p] / 255);
+    g[i] = srgbToLinear(baseRGBA[p + 1] / 255);
+    b[i] = srgbToLinear(baseRGBA[p + 2] / 255);
+    rec[i] = (0.299 * gmRGBA[p] + 0.587 * gmRGBA[p + 1] + 0.114 * gmRGBA[p + 2]) / 255;
+  }
+  onStage && onStage("解码与线性化完成");
+
+  // ---- 2) hdrgm 恢复：log_boost = rec*(max-min)+min; gain = 2^(log_boost*strength)
+  const strength = opt.strength;
+  const gMin = meta.min, gMax = meta.max;
+  const offSdr = meta.offSdr != null ? meta.offSdr : 1 / 64;
+  const offHdr = meta.offHdr != null ? meta.offHdr : 1 / 64;
+  const span = gMax - gMin;
+  const hdrR = new Float32Array(n), hdrG = new Float32Array(n), hdrB = new Float32Array(n);
+  const lum = new Float32Array(n);
+  let peak = 0;
+  for (let i = 0; i < n; i++) {
+    const logBoost = (rec[i] * span + gMin) * strength;
+    const gain = Math.pow(2, logBoost);
+    const hr = Math.max((r[i] + offSdr) * gain - offHdr, 0);
+    const hg = Math.max((g[i] + offSdr) * gain - offHdr, 0);
+    const hb = Math.max((b[i] + offSdr) * gain - offHdr, 0);
+    hdrR[i] = hr; hdrG[i] = hg; hdrB[i] = hb;
+    const L = hr * LUMA_R + hg * LUMA_G + hb * LUMA_B;
+    lum[i] = L;
+    if (L > peak) peak = L;
+  }
+  onStage && onStage(`HDR 合成完成，峰值 ${peak.toFixed(2)}x SDR 白点`);
+
+  // ---- 3) 色调映射
+  const white = 1.0;                        // sdr-white 锚定：1.0 天然是 SDR 白点
+  const prof = PROFILES[opt.profile];
+  const outR = new Float32Array(n), outG = new Float32Array(n), outB = new Float32Array(n);
+  let clipped = 0;
+
+  if (prof) {
+    // log2 域 base/detail 分解
+    const x = new Float32Array(n);
+    for (let i = 0; i < n; i++) x[i] = Math.log2(Math.max(lum[i] / white, 1e-5));
+    const rad = Math.max(2, Math.round(Math.min(w, h) * prof.radiusFrac));
+    onStage && onStage(`局部色调映射：guided filter r=${rad}px`);
+    const baseA = guidedFilter(x, w, h, rad, prof.eps);
+    onStage && onStage("guided filter 完成");
+
+    const lifted = new Float32Array(n);
+    for (let i = 0; i < n; i++) lifted[i] = baseA[i] * prof.rangeCompress;
+    const baseC = compressHighlights(lifted, prof.highlightStart);
+
+    const bp = prof.blackPoint;
+    for (let i = 0; i < n; i++) {
+      let xo = baseC[i] + (x[i] - baseA[i]) * prof.detailGain;
+      if (xo > 0) xo = 0;
+      let L = Math.pow(2, xo);
+      L = Math.min(Math.max((L - bp) / (1 - bp), 0), 1);
+      if (lum[i] > 1e-7) {
+        const scale = L / lum[i];
+        outR[i] = hdrR[i] * scale;
+        outG[i] = hdrG[i] * scale;
+        outB[i] = hdrB[i] * scale;
+      }
+      if (lum[i] / white > 1) clipped++;
+    }
+  } else {
+    // 仅全局：归一化 + 软膝 + 按亮度比例缩放 RGB
+    for (let i = 0; i < n; i++) {
+      const norm = lum[i] / white;
+      const mapped = softKnee(norm, opt.knee);
+      if (norm > 1) clipped++;
+      if (lum[i] > 1e-6) {
+        const scale = mapped / lum[i];
+        outR[i] = hdrR[i] * scale;
+        outG[i] = hdrG[i] * scale;
+        outB[i] = hdrB[i] * scale;
+      }
+    }
+  }
+  onStage && onStage("色调映射完成");
+
+  // ---- 4) 线性→sRGB，再在 sRGB（感知）域做对比/饱和度
+  //     绝不能在线性域做：线性 0.5 ≈ sRGB 188，会把暗部钉死成纯黑
+  const rand = mulberry32(0);
+  const out = new Uint8ClampedArray(n * 4);
+  const sat = opt.saturation, con = opt.contrast;
+  for (let i = 0; i < n; i++) {
+    let R = linearToSrgb(outR[i]);
+    let G = linearToSrgb(outG[i]);
+    let B = linearToSrgb(outB[i]);
+
+    if (con !== 1) {
+      R = Math.min(Math.max((R - 0.5) * con + 0.5, 0), 1);
+      G = Math.min(Math.max((G - 0.5) * con + 0.5, 0), 1);
+      B = Math.min(Math.max((B - 0.5) * con + 0.5, 0), 1);
+    }
+    if (sat !== 1) {
+      const L2 = R * LUMA_R + G * LUMA_G + B * LUMA_B;
+      R = Math.min(Math.max(L2 + (R - L2) * sat, 0), 1);
+      G = Math.min(Math.max(L2 + (G - L2) * sat, 0), 1);
+      B = Math.min(Math.max(L2 + (B - L2) * sat, 0), 1);
+    }
+    // 三角分布抖动 ±0.5 LSB，抑制 8bit 量化的渐变阶跃
+    const tri = rand() - rand();
+    const p = i * 4;
+    out[p] = R * 255 + 0.5 + tri * 0.5;
+    out[p + 1] = G * 255 + 0.5 + tri * 0.5;
+    out[p + 2] = B * 255 + 0.5 + tri * 0.5;
+    out[p + 3] = 255;
+  }
+  onStage && onStage("量化与抖动完成");
+
+  return { rgba: out, peak, clippedRatio: clipped / n, width: w, height: h };
+}
+
+/* =========================================================================
+   5. UI 流程
+   ========================================================================= */
+
+const state = {
+  file: null,
+  strength: 0.70,
+  profile: "local",
+  longEdge: 2048,
+  lastBlob: null,
+  sourceName: "",
+};
+
+function setSeg(container, key, value, dataAttr) {
+  container.querySelectorAll("button").forEach((btn) => {
+    btn.classList.toggle("on", btn.dataset[dataAttr] === String(value));
+  });
+}
+
+$("#pick").addEventListener("click", () => $("#file").click());
+
+$("#strength").addEventListener("input", (e) => {
+  state.strength = parseFloat(e.target.value);
+  $("#strengthVal").textContent = state.strength.toFixed(2);
+});
+
+$("#profileSeg").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  state.profile = btn.dataset.p;
+  setSeg($("#profileSeg"), "p", state.profile, "p");
+});
+
+$("#edgeSeg").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  state.longEdge = parseInt(btn.dataset.e, 10);
+  setSeg($("#edgeSeg"), "e", state.longEdge, "e");
+});
+
+$("#file").addEventListener("change", async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  state.file = f;
+  state.sourceName = f.name.replace(/\.[^.]+$/, "");
+  clearLog();
+  $("#resultCard").classList.add("hide");
+  $("#optCard").classList.remove("hide");
+  log(`文件：${f.name}`);
+  log(`大小：${(f.size / 1048576).toFixed(2)} MB`);
+  if (f.size > 60 * 1048576) {
+    log("文件较大，手机内存可能吃紧，建议先用「长边 1600」", "warn");
+  }
+  try {
+    await run();
+  } catch (err) {
+    log(`失败：${err && err.message ? err.message : err}`, "err");
+    if (err && err.stack) console.error(err);
+  }
+});
+
+function stage(msg) { log("· " + msg); }
+
+async function run() {
+  const file = state.file;
+  if (!file) return;
+  const buf = await file.arrayBuffer();
+  const u8 = new Uint8Array(buf);
+
+  const src = parseSource(u8);
+  if (src.kind === "isobmff") {
+    log("这是 HEIC / HEIF（ISOBMFF 容器），浏览器无法解码。", "err");
+    log("请在手机相册里「另存 / 导出为 JPG」后再选。", "warn");
+    return;
+  }
+  if (src.kind === "not_jpeg") {
+    log("不是 JPEG 文件，当前只支持 JPEG（含内嵌增益图）。", "err");
+    return;
+  }
+  if (src.kind === "plain") {
+    log("这张图没有增益图，已经是普通 SDR 图 —— 不需要转换。", "warn");
+    return;
+  }
+  if (src.kind === "unknown") {
+    log(src.reason, "err");
+    log("文件可能不是 HDR 图，或使用了尚未支持的容器。", "warn");
+    return;
+  }
+
+  log(`容器：${src.container}`);
+  if (src.meta && src.meta.carrier) log(`参数：${src.meta.carrier}`);
+  log(`增益范围：GainMapMin=${src.meta.min.toFixed(3)} GainMapMax=${src.meta.max.toFixed(3)}（log2）`);
+  log(`理论上限：${Math.pow(2, src.meta.max).toFixed(2)}x SDR 白点`);
+  if (src.warn) log(src.warn, "warn");
+
+  // ---- 解码两张 JPEG
+  const baseBlob = new Blob([src.primary], { type: "image/jpeg" });
+  const bmp = await createImageBitmap(baseBlob);
+  const sw = bmp.width, sh = bmp.height;
+  let tw = sw, th = sh;
+  if (state.longEdge > 0 && Math.max(sw, sh) > state.longEdge) {
+    const k = state.longEdge / Math.max(sw, sh);
+    tw = Math.max(1, Math.round(sw * k));
+    th = Math.max(1, Math.round(sh * k));
+  }
+  log(`主图：${sw}×${sh} → 输出 ${tw}×${th}`);
+
+  const baseCanvas = new OffscreenCanvas(tw, th);
+  const bctx = baseCanvas.getContext("2d", { willReadFrequently: true });
+  bctx.imageSmoothingEnabled = true;
+  bctx.imageSmoothingQuality = "high";
+  bctx.drawImage(bmp, 0, 0, tw, th);
+
+  const gmBlob = new Blob([src.gainRaw], { type: "image/jpeg" });
+  const gmBmp = await createImageBitmap(gmBlob);
+  log(`增益图：${gmBmp.width}×${gmBmp.height} → 缩放到 ${tw}×${th}`);
+
+  const gmCanvas = new OffscreenCanvas(tw, th);
+  const gctx = gmCanvas.getContext("2d", { willReadFrequently: true });
+  gctx.imageSmoothingEnabled = true;
+  gctx.imageSmoothingQuality = "medium";
+  gctx.drawImage(gmBmp, 0, 0, tw, th);
+
+  const baseData = bctx.getImageData(0, 0, tw, th).data;
+  const gmData = gctx.getImageData(0, 0, tw, th).data;
+
+  // ---- 烘焙
+  const opt = {
+    width: tw, height: th,
+    strength: state.strength,
+    profile: state.profile,
+    saturation: 1.12,
+    contrast: 1.06,
+    knee: 0.75,
+  };
+  const res = bakePixels(baseData, gmData, src.meta, opt, stage);
+
+  // ---- 输出 JPEG
+  const outCanvas = new OffscreenCanvas(tw, th);
+  const octx = outCanvas.getContext("2d");
+  octx.putImageData(new ImageData(res.rgba, tw, th), 0, 0);
+  const quality = state.profile === "wechat" ? 0.88 : 0.95;
+  const blob = await outCanvas.convertToBlob({ type: "image/jpeg", quality });
+  state.lastBlob = blob;
+
+  // ---- 预览
+  $("#imgBefore").src = URL.createObjectURL(baseBlob);
+  $("#imgAfter").src = URL.createObjectURL(blob);
+  $("#resultCard").classList.remove("hide");
+
+  const facts = $("#facts");
+  facts.innerHTML = "";
+  const add = (k, v) => {
+    const dt = document.createElement("dt"); dt.textContent = k;
+    const dd = document.createElement("dd"); dd.textContent = v;
+    facts.append(dt, dd);
+  };
+  add("输出尺寸", `${tw}×${th}`);
+  add("文件大小", `${(blob.size / 1024).toFixed(0)} KB`);
+  add("HDR 峰值", `${res.peak.toFixed(2)}x`);
+  add("高光裁切", `${(res.clippedRatio * 100).toFixed(2)}%`);
+  add("强度 / 档位", `${state.strength.toFixed(2)} / ${state.profile}`);
+
+  const name = `${state.sourceName}_baked.jpg`;
+  $("#dl").href = URL.createObjectURL(blob);
+  $("#dl").download = name;
+  $("#dlTip").textContent = `文件名：${name}。若点「保存」没反应，长按上方右侧预览图也可另存。`;
+
+  log(`烘焙完成：${tw}×${th}，${(blob.size / 1024).toFixed(0)} KB`, "ok");
+  if (res.clippedRatio > 0.01) {
+    log(`高光裁切 ${(res.clippedRatio * 100).toFixed(2)}%，可把强度调低一些`, "warn");
+  }
+}
+
+// 参数改动后自动重跑（防抖）
+let timer = null;
+function scheduleRerun() {
+  if (!state.file) return;
+  clearTimeout(timer);
+  timer = setTimeout(() => {
+    clearLog();
+    log("参数已变更，重新计算…");
+    run().catch((err) => log(`失败：${err.message || err}`, "err"));
+  }, 380);
+}
+$("#strength").addEventListener("change", scheduleRerun);
+$("#profileSeg").addEventListener("click", scheduleRerun);
+$("#edgeSeg").addEventListener("click", scheduleRerun);
+
+if (typeof OffscreenCanvas === "undefined") {
+  $("#log").textContent = "当前浏览器不支持 OffscreenCanvas，请用系统浏览器（不要在微信内置浏览器里打开）。";
+}
+</script>
+</body>
+</html>

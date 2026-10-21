@@ -42,9 +42,16 @@ Android 源码目录较深（`src/android/app/src/main/java/com/finn/hdr/`），
 |---|---|---|---|
 | Android App（主实现） | `src/android/` | Kotlin + C++(JNI) | ✅ 进（APK 2.2 MB，110 条目，**0 个 Python 文件**） |
 | HarmonyOS App（另一条链路） | `src/harmony/`、`src/ets/` | ArkTS | ✅ 进对应 HAP |
+| 网页版原型（**未完成，已冻结**） | `web/index.html` | 单文件 HTML+JS | ❌ 见下方说明 |
 | 容器参考实现与校验器 | `src/python/uhdr/` | Python | ❌ 不进，只在开发机/CI 跑 |
 | 回归测试 | `tests/` | Python | ❌ 不进 |
 | 工具链脚本 | `scripts/` | Python / Shell | ❌ 不进 |
+
+> **`web/` 状态：未完成的原型，已冻结，不再继续开发。**
+> 已完成的部分：JPEG 段解析（ISO 21496-1 / XMP / CUVA 判定、增益图切片）与 Node 侧解析对齐验证
+> （与 Python 结果一致：容器 `iso`、增益图 332,469 B、`GainMapMax=2.1484`）。
+> 未完成的部分：像素烘焙未与桌面版做数值对照，未在真机浏览器验证，无错误兜底。
+> 保留它只是因为解析代码可复用；**不要把它当作可用产物**。
 
 **为什么要有 Python**（不是重复劳动）：
 
@@ -63,11 +70,15 @@ hdr-vivid-ultrahdr/
 ├── docs/
 │   ├── 00-landscape.md       ← 生态调研（libultrahdr / pyultrahdr / uhdrtool / Lightroom 基线）
 │   ├── 01-design.md          ← 主设计：A 结论 / B 格式 / C 管线 / D 代码 / E 微信 / F 测试 / G 风险 / H 待核实
-│   └── 02-verification.md    ← 已验证事实：20 项单测、19 项自检、5 条踩坑记录
+│   ├── 02-verification.md    ← 已验证事实：20 项单测、19 项自检、5 条踩坑记录
+│   ├── 03-toolchain-setup.md ← 构建环境安装（dl.google.com 不可达方案）
+│   ├── 04-HANDOFF-bake.md    ← 烘焙算法决策记录
+│   └── 05-harmonyos-zhuoyitong.md ← 鸿蒙手机装本 APK 的方法（卓易通容器）
 ├── src/python/uhdr/          ← 可运行参考实现（容器解析 / 组装 / 自检 / 几何变换）
 ├── src/android/              ← 可编译 APK 工程（Kotlin + 可选 JNI），含 gradlew/wrapper，见其 README
 ├── src/ets/                  ← ArkTS 交付骨架（6 个模块）
 ├── src/harmony/              ← HarmonyOS 另版实现（Picture/GAINMAP 读取 + 导出编排）
+├── web/index.html            ← 网页版原型（未完成，已冻结，勿当产物使用）
 ├── scripts/
 │   ├── check_android_project.py  ← 无 SDK 也能跑的工程静态自检（40 项）
 │   └── fetch-libultrahdr.sh      ← 拉取第三方库（仅 native 路线需要）
