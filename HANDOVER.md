@@ -195,6 +195,9 @@ python -m uhdr.cli inspect  <file>         # 容器结构诊断
 python -m uhdr.cli validate <file>         # 结构自检
 python scripts/check_android_project.py    # Android 工程静态自检（43 项）
 bash tests/ltm_parity/run_parity.sh        # Kotlin/Python LTM 双实现数值对照（需 kotlinc）
+python tests/bake_quality_check.py <源.jpg>   # 烘焙画质体检（SSIM/等亮度HF/局部对比，信息性）
+python tests/bake_quality_check.py --selftest # 受控实验：判决 detail_gain 是否生效
+python tests/bake_quality_check.py --eps-sweep # eps 权衡曲线（细节增益 vs 边缘过冲）
 
 # Android 侧
 cd src/android
@@ -273,7 +276,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 
 | 优先级 | 事项 | 说明 |
 |---|---|---|
-| **P1** | 高频能量指标复核 | 该指标降 36% 但目视更好，需用 SSIM + 等亮度归一化复核，勿据此判画质 |
+| **P1** | LTM 参数决策（docs/04 §8） | 受控实验证明 detail_gain 在当前 eps=4e-3 下空转（local 比 off 净损 ~11% 细节能量），「高频能量」指标已废（同图三定义 −36%/+5%/−17%）。三方案：A 承认现状 / B eps≈0.1（追平 off，~13% 台阶过冲）/ C 换细节路径。影响视觉输出，需拍板 |
 | P2 | 微信档实测 | `wechat` profile 的 detail_gain=1.12 未经真机二次压缩验证 |
 | P2 | 强度可调 UI | 当前 strength 写死 0.70，未暴露给用户（profile 已可选） |
 
