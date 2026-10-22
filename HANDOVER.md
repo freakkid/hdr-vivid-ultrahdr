@@ -10,13 +10,13 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG；**并**同时产出一张「HDR 效果已烘焙进像素」的普通 JPEG（微信/任何设备可见） |
-| 到哪一步了 | 两条链路（Ultra HDR 容器、像素烘焙）**代码全部完成**，自动化验证全绿（回归 28 / 静态自检 44 / APK 构建通过）。**卡在最后一步：v0.1.5 已构建，但没装到手机过** |
+| 到哪一步了 | 两条链路（Ultra HDR 容器、像素烘焙）**代码全部完成**，自动化验证全绿（回归 32 / 静态自检 45 / APK 构建通过）。**卡在最后一步：v0.1.8 已构建，但没装到手机过** |
 | 下一步唯一要做的事 | 手机插线解锁 → 开 USB 调试 → `hdc file send` 推 APK → 卓易通安装 → 选图，看到界面五段日志与左右预览（§3.0） |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:/Users/ugnam/hdc_official/hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。这是**机器级工具，不在仓库里**，换机器需重新获取（§1.3-C、`docs/03` §3.8）|
-| 下一个真问题 | 用户那张报错的照片**已确认是真 HEIC**（`ftyp` + `heic` 品牌，8.94 MB），且容器内系统转码不可用。v0.1.6 加了主图解码、`iloc` 长度诊断与「导出原图」，装上去跑一次即可判定里面有没有增益图（§3.1）|
+| 下一个真问题 | 用户那张报错的照片**已确认是真 HEIC**（`ftyp` + `heic` 品牌，8.94 MB），容器内系统转码不可用；**里面有没有增益图至今未取到**（§3.1）。v0.1.8 装上去跑一次即可：① 看 `HEIC 摘要` 的 aux / iloc 长度；② 用导出的 `_HDR.jpg` 再选一次，确认日志出现 `hdrgm 参数取自增益图自身 XMP`（v0.1.8 的解析修复是否生效）|
 | 仓库 | `git@github.com:freakkid/hdr-vivid-ultrahdr.git`（私有），分支 `main` |
-| 最新提交 | 见 `git log --oneline -1`（写作时 `5e5eb96`）|
+| 最新提交 | 见 `git log --oneline -1`（写作时 `b88d63e`，v0.1.8）|
 | 交付形态 | **纯 Kotlin，APK 内 `.so` 数量为 0**。native libultrahdr 只是备选，从未编译验证 —— 别一上手就去接 NDK |
 
 ---
@@ -57,7 +57,7 @@ bash scripts/install_android_toolchain.sh
 # 3) 生成 local.properties（每台机器不同，故意不入库）
 printf 'sdk.dir=C\\:\\\\Users\\\\<你的用户名>\\\\Android\\\\Sdk\n' > src/android/local.properties
 
-# 4) 验证 Python 侧（28 项测试，1 秒）
+# 4) 验证 Python 侧（32 项测试，约 2 秒）
 ./run.sh test
 python3 scripts/check_android_project.py  # 工程静态自检 45 项（纯标准库，任一 Python 3 均可，无需 venv）
 
@@ -132,7 +132,7 @@ HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 
 ## 2. 基线状态
 
-Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 28 项、静态自检 45 项、
+Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 32 项、静态自检 45 项、
 APK 可构建（**v0.1.8 / versionCode 9**）。**已完成项不在此罗列**——证据在 `git log` 与
 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
 尚未做的只有 §3。
@@ -141,8 +141,8 @@ APK 可构建（**v0.1.8 / versionCode 9**）。**已完成项不在此罗列**�
 App 与 Python 烘焙输出 SSIM 0.95，见 docs/02 §2.8）验的是 `2bd975e` 的产物，
 那时 `versionCode = 1 / versionName = 0.1.0`。**
 
-也就是说：**0.1.2 的实时预览、0.1.3 的 HEIC 探针、0.1.4 的保存相册与日志滚动、
-0.1.5 的六项审查修复，从未在任何设备（含模拟器）上执行过。** 这是当前最大风险的来源。
+也就是说：**0.1.2 起的全部改动（实时预览、HEIC 探针、保存相册、日志落盘、
+三轮审查修复），从未在任何设备（含模拟器）上执行过。** 这是当前最大风险的来源。
 
 Kotlin/Python 双实现数值对照（`tests/ltm_parity/run_parity.sh`）**只在 macOS 上验证通过**：
 脚本探测的是 POSIX 路径 `…/envs/default/bin/python`，Windows 的 venv 在 `Scripts/python.exe`，
@@ -179,9 +179,10 @@ Python 侧 `int.from_bytes` 传 `'<'` 导致 EXIF Make 永远缺失、`--anchor`
 
 ## 3. 未完成（按优先级）
 
-### 3.0 【P0，唯一的阻塞项】把 v0.1.5 装到手机并跑一次
+### 3.0 【P0，唯一的阻塞项】把 v0.1.8 装到手机并跑一次
 
-代码侧没有已知阻塞。**APK 已构建好，但从未在用户手机上运行过 v0.1.2 之后的版本**
+代码侧没有已知阻塞。**APK 已构建好（`out/HdrVividUltraHdr-0.1.8-debug.apk`，2.15 MB），
+但从未在用户手机上运行过 v0.1.2 之后的版本**
 （用户手机上装的确认为旧版，但**具体是哪一版还没有截屏确认**——用 §11.3 的表去判，
 不要相信「只有一个按钮」这类描述：仓库里不存在"无日志框"的构建）。
 
@@ -210,7 +211,7 @@ cd "$(git rev-parse --show-toplevel)/out"
 然后在手机上：**卓易通 → 右上角「+」→「本地安装包」→ 选该 APK**。
 （hdc 装不了：`bm dump -n com.finn.hdr` 查不到容器内的 App，它是隔离沙箱，装/点必须人工。）
 
-装完判定标准，按顺序看（**下面文案取自 v0.1.5 源码，逐字对得上才算装对**）：
+装完判定标准，按顺序看（**下面文案取自 v0.1.8 源码，逐字对得上才算装对**）：
 
 | 检查 | 期望 |
 |---|---|
@@ -221,7 +222,8 @@ cd "$(git rev-parse --show-toplevel)/out"
 | 若 JPEG 且有增益图 | `容器：ISO_ULTRA_HDR`、`增益图：有（xxxxx B）`、右侧图片位出图 |
 | 若无增益图 | `容器：PLAIN_JPEG`、`该图无增益图（已是普通 SDR）。左图为原图。` |
 | 导出 | 点「导出全尺寸」→ `validate: ok=true errors=0`，产出 `IMG_xxx_BAKED.jpg` 与 `IMG_xxx_HDR.jpg` |
-| 报错时 | 点「复制全部日志」拿全文 —— 这是唯一可靠的反馈通道（容器无 logcat）|
+| **回读自检（v0.1.8 的关键验证点）** | 把刚导出的 `IMG_xxx_HDR.jpg` **再选一次**，日志应出现 `· hdrgm 参数取自增益图自身 XMP`，且 `meta(source): GainMapMax=` 与首次导出一致。若出现 `⚠ 增益图与 probe 均未提供 hdrgm 参数`，说明回退逻辑被触发，这次修复没生效 |
+| 报错时 | 点「复制日志（短）」或「导出日志到下载」拿全文 —— 这是唯一可靠的反馈通道（容器无 logcat）|
 
 **App 不会打印「图像数」「段序列」这类字段**（早期文档凭空写过）。它能给的是：
 格式魔数 + 前 12 字节 hex、容器判定、增益图字节数、ISO/XMP 参数、`ftyp` 与 item 表（仅 HEIC）、
@@ -400,6 +402,21 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 | ~~`MetadataValidator` 只认第一个 APP1~~ | **0.1.8 起已修**：按段内签名匹配 APP1(XMP) / APP2(MPF)，不再被 EXIF / ISO 段顶掉 | —— |
 | `web/index.html` 冻结 | 解析部分与 Python 对齐验证过，像素烘焙未做 | 用户明确要求「保留但别动」，**不要投入** |
 
+**2026-10-23 通读审查还发现以下问题，判断为不影响当前主链路，本次「只修会静默出错的那五个」故未动**。
+一条改太多就无法归因，所以留档而不是顺手改：
+
+| 项 | 现象 | 影响 |
+|---|---|---|
+| `clippedRatio` 在 LTM 档恒为 0（`HdrBaker.kt` 与 `bake.py` 同病） | 先 clip 到 [0,1] 再判 `l/white > 1`，恒不成立 | 只影响日志与调参依据，输出正确 |
+| 两端自检等级不一致 | Kotlin `ok` = 所有 check 通过；Python 只算 `ERROR` | `capacity_matches_gainmap` 等 WARN 项在 App 是硬失败 → 同一文件 CI 与真机结论可能相反 |
+| `ltm.py` 的 `LtmParams.detail_gain` 默认 1.30，`params_for_profile("local")` 是 1.32 | 只有直接构造 `LtmParams()` 才触发 | 当前调用都走 profile，不受影响；但 `LocalToneMapping.kt` 注释写的「两端同默认值」已不成立 |
+| `--anchor peak` 两端算法不同 | Python 精确 P99.5；Kotlin 用 1024 桶直方图（先截断到 1.0）+ `peak*0.85` 兜底 | 只影响 A/B 对照与未来的 Golden-file 回归 |
+| `xmp.py` 的 hdrgm 正则只认双引号属性；`Item:Data` 解码失败静默变 `(0,0)` | 第三方 XMP 用元素形式 / 单引号时读不到 | 静默退回默认 2.0，与已修的退化同源，只是触发条件更窄 |
+| `mpf.parse_mpf` 无边界校验 | 短 buffer 抛 `struct.error` 而非 `ValueError`；截断 entry 产生假 offset | `validator` 用 `except` 兜住不会崩，但丢失错误原因 |
+| `bake.py` 全分辨率解码；增益图重采样器与 `export` 不一致 | `long_edge` 只约束输出不约束解码（48MP 图内存峰值 2 GB+）；比例不一致时非等比拉伸 | 桌面工具链，不在 App 链路 |
+| `MainActivity` 日志逐行主线程落盘；无增益图分支在主线程解码整图 | 日志上百行时掉帧；超大图可能 ANR / OOM | 真机观感与稳定性 |
+| `MainActivity.loadSource` 开头未清 `parsed / pvBase / pvGain` | 换图后拖滑杆可能用上一张的增益图重算预览 | 界面错乱，不崩 |
+
 ---
 
 ## 4. 关键决策记录（避免后人推翻）
@@ -502,7 +519,7 @@ ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT"   # 每段都从仓库根开
 # Python 侧（一律用 venv 解释器；裸 `python` 指向 3.13.12 系统装，无 PIL/numpy）
 PY="C:/Users/ugnam/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 
-./run.sh test                              # 28 项回归
+./run.sh test                              # 32 项回归
 ./run.sh demo                              # 端到端演示（合成源）
 PYTHONPATH=src/python "$PY" -m uhdr.cli inspect  <file>    # 容器结构诊断
 PYTHONPATH=src/python "$PY" -m uhdr.cli validate <file>    # 结构自检
@@ -692,6 +709,8 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 
 ## 12. 一句话总结
 
-**代码写完了，验证卡在「装到设备上跑一次」。** 所有剩余风险都源于同一个事实：
-v0.1.2 之后的所有改动（预览、日志、HEIC 探针、保存相册、审查修复）**从未在任何设备执行过**
+**代码写完了，验证卡在「装到设备上跑一次」。** v0.1.8 是第一个「解析端不再静默退化」的版本：
+增益参数改从**增益图自身 XMP** 读（无 `.so` 也能拿到）、畸形 ISO 段降级而不崩、
+`0xFF` 填充不再误判、XMP/MPF 段按签名匹配、CUVA 未验证语义会显式上报。
+但这些只有桌面侧测试覆盖（回归 32 项），**App 从未在任何设备执行过 v0.1.2 之后的代码**
 ——连模拟器验的都是 v0.1.0 的产物。先做 §3.0，再谈别的。

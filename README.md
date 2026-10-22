@@ -14,21 +14,23 @@ Android 源码目录较深（`src/android/app/src/main/java/com/finn/hdr/`），
 
 | 模块 | 文件 | 行数 |
 |---|---|---|
-| 入口界面（选图 → 双轨导出 + profile/强度选择） | [MainActivity.kt](src/android/app/src/main/java/com/finn/hdr/MainActivity.kt) | 256 |
-| **HDR 源解析**（ISO 21496-1 / XMP / CUVA 判定） | [HdrSourceParser.kt](src/android/app/src/main/java/com/finn/hdr/HdrSourceParser.kt) | 326 |
-| **ISO 21496-1 元数据** | [IsoGainMap.kt](src/android/app/src/main/java/com/finn/hdr/IsoGainMap.kt) | 129 |
-| 增益图几何变换 | [GainMapGeometry.kt](src/android/app/src/main/java/com/finn/hdr/GainMapGeometry.kt) | 110 |
-| **Ultra HDR 封装**（纯 Kotlin，无 NDK 也能跑） | [UltraHdrPackager.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrPackager.kt) | 199 |
-| **烘焙**：HDR → 普通 JPEG（微信/任何设备可见） | [HdrBaker.kt](src/android/app/src/main/java/com/finn/hdr/HdrBaker.kt) | 264 |
-| **局部色调映射**（guided filter，移植自 ltm.py） | [LocalToneMapping.kt](src/android/app/src/main/java/com/finn/hdr/LocalToneMapping.kt) | 265 |
-| 导出编排 | [UltraHdrExporter.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrExporter.kt) | 142 |
-| 导出后自检 | [MetadataValidator.kt](src/android/app/src/main/java/com/finn/hdr/MetadataValidator.kt) | 223 |
-| 分享引导（文件/原图/直接发图） | [ShareGuidance.kt](src/android/app/src/main/java/com/finn/hdr/ShareGuidance.kt) | 97 |
-| libultrahdr JNI 门面 | [UltraHdrNative.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrNative.kt) | 64 |
-| JNI 实现（API-4） | [uhdr_jni.cpp](src/android/app/src/main/cpp/uhdr_jni.cpp) | 184 |
+| 入口界面（选图 → 双轨导出 + profile/强度选择） | [MainActivity.kt](src/android/app/src/main/java/com/finn/hdr/MainActivity.kt) | 745 |
+| **HDR 源解析**（ISO 21496-1 / XMP / CUVA 判定） | [HdrSourceParser.kt](src/android/app/src/main/java/com/finn/hdr/HdrSourceParser.kt) | 343 |
+| **ISO 21496-1 元数据** | [IsoGainMap.kt](src/android/app/src/main/java/com/finn/hdr/IsoGainMap.kt) | 116 |
+| 增益图几何变换 | [GainMapGeometry.kt](src/android/app/src/main/java/com/finn/hdr/GainMapGeometry.kt) | 97 |
+| **Ultra HDR 封装**（纯 Kotlin，无 NDK 也能跑） | [UltraHdrPackager.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrPackager.kt) | 169 |
+| **烘焙**：HDR → 普通 JPEG（微信/任何设备可见） | [HdrBaker.kt](src/android/app/src/main/java/com/finn/hdr/HdrBaker.kt) | 234 |
+| **局部色调映射**（guided filter，移植自 ltm.py） | [LocalToneMapping.kt](src/android/app/src/main/java/com/finn/hdr/LocalToneMapping.kt) | 254 |
+| 导出编排 | [UltraHdrExporter.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrExporter.kt) | 143 |
+| 导出后自检 | [MetadataValidator.kt](src/android/app/src/main/java/com/finn/hdr/MetadataValidator.kt) | 209 |
+| 分享引导（文件/原图/直接发图） | [ShareGuidance.kt](src/android/app/src/main/java/com/finn/hdr/ShareGuidance.kt) | 89 |
+| libultrahdr JNI 门面 | [UltraHdrNative.kt](src/android/app/src/main/java/com/finn/hdr/UltraHdrNative.kt) | 56 |
+| HEIC 结构探针（不解码就读 aux URN / iloc 长度） | [HeifInspector.kt](src/android/app/src/main/java/com/finn/hdr/HeifInspector.kt) | 340 |
+| HEIC 主图解码（系统解码器，拿不到增益图） | [HeicDecoder.kt](src/android/app/src/main/java/com/finn/hdr/HeicDecoder.kt) | 112 |
+| JNI 实现（API-4） | [uhdr_jni.cpp](src/android/app/src/main/cpp/uhdr_jni.cpp) | 149 |
 | 构建配置 | [app/build.gradle.kts](src/android/app/build.gradle.kts) ｜ [CMakeLists.txt](src/android/app/src/main/cpp/CMakeLists.txt) | — |
 
-合计 **Kotlin 1891 行 + C++ 184 行**，产物 `app-debug.apk` 2.2 MB。
+合计 **Kotlin 2907 行 + C++ 149 行**，产物 `app-debug.apk` 2.15 MB（v0.1.8）。
 
 > `src/android/local.properties` 是唯一未入库的文件：它记录本机 SDK 绝对路径，
 > 每台机器不同，已由 `.gitignore` 排除（Android 项目通行做法）。缺它时构建会提示
@@ -59,7 +61,7 @@ Android 源码目录较深（`src/android/app/src/main/java/com/finn/hdr/`），
    实现由两套独立代码互证——真机产物拉回桌面跑 `uhdr.cli validate`，是唯一的外部证据。
 2. **桌面取证**：真机上「增益图不见了」这类问题，必须把文件拉下来逐段拆（本次就是靠它
    定位到 ISO 21496-1 载体缺失 + Kotlin 的 `pos+3` 边界 bug）。
-3. **快速回归**：Python 28 项测试 1.6 秒，Android 构建 20–60 秒，反馈速度差一个量级。
+3. **快速回归**：Python 32 项测试约 2 秒，Android 构建 20–60 秒，反馈速度差一个量级。
 
 如果你只需要 App、不打算维护桌面工具链，见文末「收敛为纯安卓项目」。
 
@@ -81,7 +83,7 @@ hdr-vivid-ultrahdr/
 ├── src/harmony/              ← HarmonyOS 另版实现（Picture/GAINMAP 读取 + 导出编排）
 ├── web/index.html            ← 网页版原型（未完成，已冻结，勿当产物使用）
 ├── scripts/
-│   ├── check_android_project.py  ← 无 SDK 也能跑的工程静态自检（44 项）
+│   ├── check_android_project.py  ← 无 SDK 也能跑的工程静态自检（45 项）
 │   └── fetch-libultrahdr.sh      ← 拉取第三方库（仅 native 路线需要）
 ├── tests/
 │   ├── test_pipeline.py    ← 20 项回归测试（含 3 项负向）
@@ -113,10 +115,10 @@ python -m uhdr.cli export path/to/photo.jpg -o out/photo.hdr.jpg --long-edge 204
 # 自检
 python -m uhdr.cli validate out/photo.hdr.jpg
 
-# 回归测试（28 项）
+# 回归测试（32 项）
 ./run.sh test
 
-# Android 工程静态自检（不需要 Android SDK，44 项）
+# Android 工程静态自检（不需要 Android SDK，45 项）
 python scripts/check_android_project.py
 ```
 
@@ -130,7 +132,7 @@ Python 依赖仅 `Pillow`（用于像素采样）。运行环境建议使用隔�
 | XMP / MPF 构造与解析（含增益图侧双写） | 已实现，往返测试通过 |
 | 增益图同步缩放 / 裁剪 / 旋转 | 已实现，比例断言通过 |
 | 端到端导出 + 自检 | 通过（19 项全 PASS） |
-| Android 工程骨架（Gradle/Manifest/Activity/Wrapper） | 已补齐，静态自检 44 项通过；**BUILD SUCCESSFUL，APK 2.1 MB** |
+| Android 工程骨架（Gradle/Manifest/Activity/Wrapper） | 已补齐，静态自检 45 项通过；**BUILD SUCCESSFUL，APK 2.15 MB** |
 | 构建环境（JDK 17 + SDK 34 + Gradle 8.7） | 已在本机安装并验证，镜像方案见 `docs/03-toolchain-setup.md` |
 | CI 云端出包（GitHub Actions） | 已配置，推送后可直接下载 APK |
 | 纯 Kotlin 封装器（无 NDK 也能跑路线 B） | 已完成，可在任意 Android Studio 环境编出 APK |
