@@ -28,6 +28,9 @@ object HdrSourceParser {
 
     private val XMP_SIG = "http://ns.adobe.com/xap/1.0/\u0000".toByteArray(Charsets.US_ASCII)
 
+    /** 同时接受双引号与单引号属性形式（第三方文件两种都出现过）。 */
+    private val HDRGM_ATTR = Regex("""hdrgm:(\w+)\s*=\s*["']([^"']*)["']""")
+
     enum class Container { CUVA, ISO_ULTRA_HDR, PLAIN_JPEG, UNKNOWN_MPO }
 
     data class HdrSource(
@@ -125,7 +128,16 @@ object HdrSourceParser {
             val txt = String(bytes, scan.xmpStart + XMP_SIG.size, scan.xmpEnd - scan.xmpStart - XMP_SIG.size)
             if (txt.contains("Semantic=\"GainMap\"") || txt.contains("Semantic='GainMap'")) {
                 notes += "主图 XMP 含 GContainer 增益图项"
-                return HdrSource(Container.ISO_ULTRA_HDR, sdr, gmRaw, probeMeta, make,
+                // 完整参数按规范写在**增益图**自身的 XMP 里，主图只有 Version 占位。
+                // 只读主图（或只依赖 native probe）时，纯 Kotlin 包（无 .so）拿不到参数，
+                // 会静默退回默认 2.0 —— 表现为「导出 → 再解析」增益上限掉一截。
+                val fromGainMap = gainMetaFromXmp(bytes, second)
+                when {
+                    fromGainMap != null -> notes += "hdrgm 参数取自增益图自身 XMP"
+                    probeMeta != null -> notes += "hdrgm 参数取自 libultrahdr probe"
+                    else -> notes += "⚠ 增益图与 probe 均未提供 hdrgm 参数，按默认值处理（实际增益可能被低估）"
+                }
+                return HdrSource(Container.ISO_ULTRA_HDR, sdr, gmRaw, fromGainMap ?: probeMeta, make,
                     needsBoostRecompute = false, notes = notes)
             }
         }
@@ -192,6 +204,44 @@ object HdrSourceParser {
             if (segEnd > r.end) break
             if (m == APP2 && IsoGainMap.startsWithSig(b, pos + 4)) return Range(pos + 4, segEnd)
             if (m == SOS) break
+            pos = segEnd
+        }
+        return null
+    }
+
+    /**
+     * 从指定图像（通常是增益图）的 XMP APP1 里读出 hdrgm 参数。
+     *
+     * 只认带真实参数的段：主图那份按设计只写 `hdrgm:Version`，读它等于没读，
+     * 必须回退到默认值并让调用方知道（与 Python 侧 `_meta_from_gainmap_xmp` 同语义）。
+     */
+    private fun gainMetaFromXmp(b: ByteArray, r: Range): UltraHdrNative.GainMapMeta? {
+        var pos = r.start + 2
+        while (pos + 3 < r.end) {
+            if (b[pos] != 0xFF.toByte()) return null
+            val m = b[pos + 1].toInt() and 0xFF
+            if (m == 0xD8) { pos += 2; continue }
+            val len = ((b[pos + 2].toInt() and 0xFF) shl 8) or (b[pos + 3].toInt() and 0xFF)
+            if (len < 2) return null
+            val segEnd = pos + 2 + len
+            if (segEnd > r.end) return null
+            if (m == SOS) return null
+            if (m == APP1 && startsWith(b, pos + 4, segEnd, XMP_SIG)) {
+                val text = String(b, pos + 4 + XMP_SIG.size, segEnd - pos - 4 - XMP_SIG.size, Charsets.UTF_8)
+                val raw = HDRGM_ATTR.findAll(text).associate { it.groupValues[1] to it.groupValues[2] }
+                if (raw.containsKey("GainMapMax") || raw.containsKey("HDRCapacityMax")) {
+                    fun f(key: String, def: Float) = raw[key]?.toFloatOrNull() ?: def
+                    return UltraHdrNative.GainMapMeta(
+                        minContentBoost = f("GainMapMin", 0f),
+                        maxContentBoost = f("GainMapMax", 2f),
+                        gamma = f("Gamma", 1f),
+                        offsetSdr = f("OffsetSDR", 1f / 64f),
+                        offsetHdr = f("OffsetHDR", 1f / 64f),
+                        hdrCapacityMin = f("HDRCapacityMin", 0f),
+                        hdrCapacityMax = f("HDRCapacityMax", 2f),
+                    )
+                }
+            }
             pos = segEnd
         }
         return null

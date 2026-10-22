@@ -41,6 +41,10 @@ class ExportResult:
     out_path: str
     ok: bool
     source_container: str
+    # 增益语义是否由源图自身参数确定。False = 用的是默认 hdrgm 参数
+    # （CUVA / unknown_mpo 这类「增益图存在但未声明 hdrgm 语义」的来源）。
+    # 结构自检通过不代表语义正确，两者必须分开报告。
+    semantics_verified: bool = True
     steps: list[str] = field(default_factory=list)
     layout: dict = field(default_factory=dict)
     validation: dict = field(default_factory=dict)
@@ -157,6 +161,7 @@ def export(
 
     # 增益参数优先沿用源图（ISO 21496-1 或 XMP 解出的），仅在源图缺失时用默认值。
     # 直接套默认值会把源的真实动态范围压平，是"看着像 HDR 但不对"的常见原因。
+    semantics_verified = source.meta is not None
     if source.meta is not None:
         meta = source.meta
         steps.append(f"meta(source): GainMapMax={meta.gain_map_max:.4f} "
@@ -169,7 +174,12 @@ def export(
             hdr_capacity_min=0.0,
             hdr_capacity_max=opt.gain_map_max_log2,
         )
-        steps.append("meta(default): 源图未提供增益参数，使用默认 log2=%.2f" % opt.gain_map_max_log2)
+        steps.append("meta(ASSUMED): 源图未提供增益参数，按默认 log2=%.2f 封装" % opt.gain_map_max_log2)
+        # 置顶：这条比后面的几何提示重要得多，不能淹没在 warnings 中段
+        warnings.insert(0,
+                        f"语义未验证：源容器 {source.container} 的增益图未声明 hdrgm/ISO 参数，"
+                        f"已按默认 log2={opt.gain_map_max_log2:.2f} 封装。"
+                        "结构合法，但增益幅度与色彩可能与真实 HDR 不一致。")
     uhdr, layout = writer.build_uhdr_jpeg(main_jpeg, gm_jpeg, meta)
     steps.append(f"package: primary_len={layout.primary_len} gm_offset={layout.gainmap_offset} total={layout.total_len}")
 
@@ -185,6 +195,7 @@ def export(
         out_path=out_path,
         ok=rep.ok,
         source_container=source.container,
+        semantics_verified=semantics_verified,
         steps=steps,
         layout=asdict(layout),
         validation=rep.to_dict(),

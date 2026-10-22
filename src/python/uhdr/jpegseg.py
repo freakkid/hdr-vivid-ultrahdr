@@ -46,9 +46,14 @@ def iter_header_segments(data: bytes, start: int = 0):
         if data[pos] != 0xFF:
             raise JpegParseError(f"段边界错位 @ {pos}")
         marker = 0xFF00 | data[pos + 1]
+        # 填充字节：marker 前允许任意多个 0xFF（JPEG 规范允许，部分相机/编码器会写）。
+        # 只能前进 1 字节——前进 2 会跳过真正的 marker 起始位，把后续长度读错。
+        if marker == 0xFFFF:
+            pos += 1
+            continue
         if marker == EOI:
             return
-        if marker == 0xFFFF or marker == 0xFF01 or 0xFFD0 <= marker <= 0xFFD7:
+        if marker == 0xFF01 or 0xFFD0 <= marker <= 0xFFD7:
             pos += 2
             continue
         seglen = _read_segment_length(data, pos)
@@ -75,6 +80,9 @@ def find_image_end(data: bytes, start: int = 0) -> int:
             pos += 1
             continue
         marker = data[pos + 1]
+        if marker == 0xFF:  # 填充字节，前进 1 字节重新找 marker
+            pos += 1
+            continue
         if marker == 0xDA:  # SOS：跳过熵编码数据
             seglen = _read_segment_length(data, pos)
             pos += 2 + seglen

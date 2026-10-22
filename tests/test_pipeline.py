@@ -48,6 +48,20 @@ class TestJpegSeg(unittest.TestCase):
         self.assertEqual(images[-1][1], len(data), "最后一张图的区间终点应等于文件长度")
 
 
+    def test_padding_bytes_before_marker(self):
+        """JPEG 允许 marker 前出现任意多个 0xFF 填充字节。
+
+        早期实现遇到 `FF FF` 时前进 2 字节，会跳过真正 marker 的起始位，
+        把后续字节当长度读，最终抛「段边界错位」并把合法文件判成非法 JPEG。
+        """
+        data = synthetic.make_cuva_sample(600)
+        start, end = jpegseg.find_all_images(data)[0]
+        blob = data[:start + 2] + b"\xff\xff\xff" + data[start + 2:]
+        segs = jpegseg.header_segments_of(blob, start, end + 3)
+        self.assertTrue(segs, "填充字节之后应仍能解析出段")
+        self.assertTrue(all(s.marker != 0xFFFF for s in segs), "填充字节不应被当成独立段")
+
+
 class TestMpf(unittest.TestCase):
     def test_roundtrip(self):
         entries = [mpf.MpEntry(mpf.ATTR_PRIMARY, 1000, 0), mpf.MpEntry(0, 200, 800)]
@@ -161,6 +175,15 @@ class TestIso21496(unittest.TestCase):
         self.assertAlmostEqual(d["GainMapMax"], 2.0, places=3)
         self.assertAlmostEqual(d["GainMapMin"], 0.0, places=3)
 
+    def test_truncated_body_degrades_to_none(self):
+        """声明了分段但实际被截断的畸形 APP2 必须降级为「无参数」，不能抛异常。
+
+        门槛若只校验 header+1 个 fraction（13 字节），body 落在 13~60 之间会走进
+        循环并抛 ValueError，把整条导出链路打断——这是第三方文件才能触发的路径。
+        """
+        truncated = iso21496.ISO_SIG + b"\x00\x00\x00\x00\x40" + b"\x00" * 12
+        self.assertIsNone(iso21496.parse_app2(truncated))
+
 
 class TestSourceDetection(unittest.TestCase):
     """判定优先级：ISO 证据必须压过 _cuva 之类弱证据。"""
@@ -189,7 +212,8 @@ class TestEndToEnd(unittest.TestCase):
         synthetic.write_cuva_sample(cls.src, base_long_edge=1600)
         cls.out = os.path.join(cls.tmp, "out_uhdr.jpg")
         cls.result = pipeline.export(cls.src, cls.out, pipeline.ExportOptions(long_edge=1024))
-        cls.data = open(cls.out, "rb").read()
+        with open(cls.out, "rb") as f:
+            cls.data = f.read()
 
     def test_export_ok(self):
         self.assertTrue(self.result.ok, self.result.validation)
@@ -271,9 +295,26 @@ class TestEndToEnd(unittest.TestCase):
         ids = [c.check_id for c in rep.checks if not c.ok]
         self.assertIn("meta.xmp_present", ids)
 
+    def test_xmp_found_even_if_exif_comes_first(self):
+        """相机/厂商文件通常 EXIF APP1 在 XMP APP1 之前。
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+        自检器若取「第一个 APP1」，会把完全正确的文件判成「缺少 XMP」。
+        我们自己的产物把 XMP 写最前，所以这个缺陷在自有产物上永远测不出来。
+        """
+        fake_exif = b"\xff\xe1\x00\x08Exif\x00\x00"
+        blob = self.data[:2] + fake_exif + self.data[2:]
+        rep = validator.validate_bytes(blob)
+        hit = [c for c in rep.checks if c.check_id == "meta.xmp_present"]
+        self.assertTrue(hit and hit[0].ok, "EXIF 在 XMP 之前时被误判为缺 XMP")
+
+    def test_unverified_semantics_is_reported(self):
+        """CUVA 源没有 hdrgm 参数：结构可以 ok，但语义必须明确标注为未验证。
+
+        否则调用方只看到 ok=True，会把它当成「增益量已校准」的 HDR 文件。
+        """
+        self.assertFalse(self.result.semantics_verified)
+        self.assertIn("语义未验证", self.result.warnings[0],
+                      "该警告必须置顶，不能被几何提示淹没")
 
 
 class TestRoundTrip(unittest.TestCase):

@@ -22,6 +22,10 @@ from dataclasses import dataclass, field
 ISO_SIG = b"urn:iso:std:iso:ts:21496:-1\x00"
 ISO_HEADER_LEN = 5
 FRACTION_COUNT = 7
+FRACTION_SIZE = 8
+# 完整参数块的最小长度：header + 7 个 fraction。门槛必须按这个算，
+# 否则 body 落在 13~60 字节的畸形段会走进循环并抛 ValueError，直接打断整条导出。
+MIN_BODY_LEN = ISO_HEADER_LEN + FRACTION_COUNT * FRACTION_SIZE
 DEFAULT_DENOMINATOR = 1_000_000
 
 
@@ -85,14 +89,19 @@ def parse_app2(payload: bytes) -> IsoGainMapMeta | None:
     if not payload.startswith(ISO_SIG):
         return None
     body = payload[len(ISO_SIG):]
-    if len(body) < ISO_HEADER_LEN + 8:
+    if len(body) < MIN_BODY_LEN:
         # 实测主图侧只有 4 字节 version 块，完整参数写在增益图自身的 APP2 里
         return None
 
     meta = IsoGainMapMeta(header_bytes=body[:ISO_HEADER_LEN])
     values = []
     for k in range(FRACTION_COUNT):
-        v, num, den = _read_fraction(body, ISO_HEADER_LEN + k * 8)
+        # 逐项再验一次边界：第三方文件可能是「声明 7 项但实际被截断」的畸形段，
+        # 这里必须降级为「无参数」而不是抛异常（与 Kotlin IsoGainMap 一致）。
+        try:
+            v, _num, _den = _read_fraction(body, ISO_HEADER_LEN + k * FRACTION_SIZE)
+        except ValueError:
+            return None
         values.append(round(v, 6))
     meta.raw_values = values
 

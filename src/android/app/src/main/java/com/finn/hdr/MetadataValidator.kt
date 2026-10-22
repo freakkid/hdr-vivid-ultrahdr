@@ -23,6 +23,9 @@ object MetadataValidator {
     private const val TAG_XMP = "http://ns.adobe.com/xap/1.0/"
     private const val TAG_MPF = "MPF"
 
+    private val XMP_SIG = (TAG_XMP + "\u0000").toByteArray(Charsets.US_ASCII)
+    private val MPF_SIG = (TAG_MPF + "\u0000").toByteArray(Charsets.US_ASCII)
+
     fun validate(jpeg: ByteArray): Report {
         val checks = mutableListOf<Check>()
 
@@ -30,11 +33,13 @@ object MetadataValidator {
         checks += Check("two_images", images.size >= 2, "检测到 ${images.size} 个 JPEG 图像")
 
         val segs = headerSegments(jpeg, 0, images.firstOrNull()?.second ?: jpeg.size)
-        val xmpSeg = segs.firstOrNull { it.marker == 0xE1 }
-        val mpfSeg = segs.firstOrNull { it.marker == 0xE2 }
+        // 必须按段内签名挑，不能取「第一个 APP1」：相机文件通常 EXIF 在 XMP 之前，
+        // 取第一个 APP1 会把完全正确的文件判成「缺 XMP」。APP2 同理（ISO 21496-1 也是 APP2）。
+        val xmpSeg = segs.firstOrNull { it.marker == 0xE1 && hasSig(jpeg, it, XMP_SIG) }
+        val mpfSeg = segs.firstOrNull { it.marker == 0xE2 && hasSig(jpeg, it, MPF_SIG) }
 
         val xmpText = xmpSeg?.let {
-            String(jpeg, it.payloadStart + TAG_XMP.length + 1, it.segEnd - it.payloadStart - TAG_XMP.length - 1)
+            String(jpeg, it.payloadStart + XMP_SIG.size, it.segEnd - it.payloadStart - XMP_SIG.size)
         }
         checks += Check("xmp_present", xmpText?.contains("Container:Directory") == true, "XMP 含 Container:Directory")
 
@@ -93,6 +98,13 @@ object MetadataValidator {
     // ---------------- 结构扫描 ----------------
 
     private data class Seg(val marker: Int, val payloadStart: Int, val segEnd: Int)
+
+    /** 段净荷是否以指定签名开头（用于区分 APP1 的 EXIF / XMP、APP2 的 MPF / ISO）。 */
+    private fun hasSig(b: ByteArray, seg: Seg, sig: ByteArray): Boolean {
+        if (seg.segEnd - seg.payloadStart < sig.size) return false
+        for (i in sig.indices) if (b[seg.payloadStart + i] != sig[i]) return false
+        return true
+    }
 
     private fun headerSegments(b: ByteArray, start: Int, end: Int): List<Seg> {
         val out = mutableListOf<Seg>()

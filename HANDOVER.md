@@ -1,6 +1,6 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-22 00:10（v0.1.5 经三路独立审查修复后已推送；hdc 已就位；待装机验证）
+> 最后更新：2026-10-23（v0.1.8：修掉增益参数退化、畸形段崩溃、0xFF 填充误判、XMP 段误取、语义静默成功五项；待装机验证）
 > 读这一篇就能接手，不需要回看聊天记录。
 
 ---
@@ -133,7 +133,7 @@ HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 ## 2. 基线状态
 
 Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 28 项、静态自检 45 项、
-APK 可构建（**v0.1.7 / versionCode 8**）。**已完成项不在此罗列**——证据在 `git log` 与
+APK 可构建（**v0.1.8 / versionCode 9**）。**已完成项不在此罗列**——证据在 `git log` 与
 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
 尚未做的只有 §3。
 
@@ -162,6 +162,18 @@ Kotlin/Python 双实现数值对照（`tests/ltm_parity/run_parity.sh`）**只�
 导出线程读 Spinner 改主线程快照、`HeifInspector.u32` 返 Int 溢出改全程 Long、
 Python 侧 `int.from_bytes` 传 `'<'` 导致 EXIF Make 永远缺失、`--anchor` 解析了没透传。
 
+**2026-10-23（v0.1.8）又做了一轮通读审查，修掉 5 个「会静默产出错误结果」的缺陷**：
+
+| 缺陷 | 为什么危险 | 修法 |
+|---|---|---|
+| Kotlin 解析 XMP 载体源图时用 `probeMeta`（无 native 时恒 null），不读增益图自身 XMP | 纯 Kotlin 包（0 个 `.so`）下**每次**回读自己导出的 `_HDR.jpg` 都拿不到增益参数，退回默认 `GainMapMax=2.0`（源真实值常为 2.1484）→ 导出再解析掉增益。与 Python 侧已修的「4.43x→4.00x」同源，Kotlin 侧漏了 | 新增 `gainMetaFromXmp()`：解析增益图 APP1 里的 hdrgm 属性（单/双引号都认），取不到才回退 probe → 默认值，并在日志写明来源 |
+| Python `iso21496.parse_app2` 长度门槛写成 `header+1 个 fraction`（13 B），循环却读 7 个（56 B） | 第三方畸形段 body 落在 13~60 B 时抛 `ValueError`，`vivid_source` 未捕获 → 整条 export 崩掉 | 门槛改 `MIN_BODY_LEN=61`，循环内逐项兜底返回 None（与 Kotlin 一致） |
+| Python `jpegseg` 遇 `FF FF` 填充时前进 2 字节 | JPEG 允许 marker 前任意多个 `0xFF`，前进 2 会跳过真 marker 起始位 → 合法文件被判「段边界错位 / 不是合法 JPEG」 | 填充只前进 1 字节；`find_image_end` 同样跳过 |
+| 两端自检都取「第一个 APP1」当 XMP（APP2 当 MPF） | 相机文件通常 EXIF 在 XMP 之前 → **正确文件被报 `xmp_present` ERROR**；ISO 21496-1 也是 APP2，在前时会顶掉 MPF | 改为按段内签名匹配（`XMP_SIG` / `MPF_SIG`） |
+| `pipeline.export` 对 CUVA/unknown_mpo（无 hdrgm 参数）静默套默认值且 `ok=True` | 结构合法 ≠ 增益语义正确，调用方只会看到 ok | 新增 `ExportResult.semantics_verified`，警告置顶，`steps` 写 `meta(ASSUMED)`；CLI 打 stderr 并提供 `--require-verified`（退出码 3） |
+
+回归从 28 项增至 **32 项**（新增：0xFF 填充、ISO 截断降级、EXIF 在前的 XMP 判定、语义未验证上报）。
+
 
 ---
 
@@ -179,15 +191,15 @@ HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 # 1) 确认连上（[Empty] 就是没连：需解锁屏幕 + USB 调试 + 手机上点允许调试）
 "$HDC" list targets -v
 
-# 2) 先删旧包。注意通配符千万别写 0.1.*——它会把马上要推的 0.1.5 一起匹配掉
-"$HDC" shell "rm -f /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.[0-4]*.apk"
+# 2) 先删旧包。注意通配符千万别写 0.1.*——它会把马上要推的 0.1.8 一起匹配掉
+"$HDC" shell "rm -f /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.[0-7]*.apk"
 
 # 3) 再推新包（用绝对锚点，不依赖当前目录）
 cd "$(git rev-parse --show-toplevel)/out"
-"$HDC" file send HdrVividUltraHdr-0.1.7-debug.apk \
-  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.5.apk
+"$HDC" file send HdrVividUltraHdr-0.1.8-debug.apk \
+  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.8.apk
 
-# 4) 必须看到一行 2.2 MB 的 0.1.5.apk，否则推失败
+# 4) 必须看到一行 2.2 MB 的 0.1.8.apk，否则推失败
 "$HDC" shell "ls -l /storage/media/100/local/files/Docs/Download/*.apk"
 ```
 
@@ -385,7 +397,7 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 | `HdrBaker` 忽略 `meta.gamma` | 恒按 gamma=1.0 处理 | 源 gamma≠1 时 HDR 曲线会偏，当前样张恰为 1.0 |
 | 导出丢 EXIF / ICC | 只保留像素与结构元数据 | 白平衡/镜头信息丢失；ICC 丢失在广色域源上可能偏色 |
 | ~~`MediaStore` 插入缺 `IS_PENDING`~~ | **0.1.6 起已修**：导出原图与导出日志都走两段式提交 | —— |
-| `MetadataValidator` 只认第一个 APP1 | 多 XMP 段时可能漏判 | 我们自己的产物只有一个 APP1，不受影响 |
+| ~~`MetadataValidator` 只认第一个 APP1~~ | **0.1.8 起已修**：按段内签名匹配 APP1(XMP) / APP2(MPF)，不再被 EXIF / ISO 段顶掉 | —— |
 | `web/index.html` 冻结 | 解析部分与 Python 对齐验证过，像素烘焙未做 | 用户明确要求「保留但别动」，**不要投入** |
 
 ---
@@ -511,15 +523,15 @@ bash ../../scripts/fetch-libultrahdr.sh                 # 需要 native 时
 # 真机 —— 鸿蒙（当前设备，用 hdc）
 HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 cd "$ROOT" && "$HDC" list targets -v        # [Empty] = 没连上
-cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.7-debug.apk \
-  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.5.apk
-"$HDC" shell "ls -l /storage/media/100/local/files/Docs/Download/*.apk"   # 必须出现 2.2 MB 的 0.1.5；只有旧包=推失败
+cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.8-debug.apk \
+  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.8.apk
+"$HDC" shell "ls -l /storage/media/100/local/files/Docs/Download/*.apk"   # 必须出现 2.2 MB 的 0.1.8；只有旧包=推失败
 "$HDC" shell "snapshot_display -f /data/local/tmp/s.jpeg"   # 截屏
 cd "$ROOT/out" && "$HDC" file recv /data/local/tmp/s.jpeg "screen_$(date +%H%M%S).jpeg"
   # 别覆盖 phone_screen.jpeg——它已入库且被 §8 列为隐私文件
 
 # 真机 —— 安卓（旧 Mate 30 / 模拟器，用 adb）
-cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.7-debug.apk
+cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.8-debug.apk
 F="cache/exports/IMG_xxxx_HDR.jpg"       # 换成实际文件名，别照抄 <file> 占位符
 adb exec-out run-as com.finn.hdr cat "$F" > pulled.jpg \
   && test -s pulled.jpg || echo "拉取失败或文件不存在"   # 重定向会掩盖失败，必须 test -s
@@ -632,7 +644,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地现存：`out/HdrVividUltraHdr-0.1.7-debug.apk`（约 2.2 MB）。
+本地现存：`out/HdrVividUltraHdr-0.1.8-debug.apk`（约 2.2 MB）。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 
@@ -656,7 +668,8 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 | 0.1.4 | 5 | `7a9ba54` | 日志自动滚到底、保存到相册、导出只留 10 份、旋转不重建 Activity | 「保存烘焙图到相册」按钮 |
 | 0.1.5 | 6 | `5e5eb96` | 三路审查修复：线程崩溃 / 往返丢增益参数 / EXIF 方向 / 采样解码防 OOM / 预览防抖 / 解析溢出 | 外观同 0.1.4，行为更稳 |
 | 0.1.6 | 7 | `59bfb27` | **HEIC 主图解码** + `iloc` 长度诊断 + 「导出原图」 | 「导出原图（HEIC 无增益图时用）」按钮 |
-| **0.1.7** | **8** | 见 `git log` | 诊断压成 4~8 行摘要 + 日志落盘导出（解决「复制不全」）| 「复制日志（短）」「导出日志到下载」两个按钮 |
+| 0.1.7 | 8 | 见 `git log` | 诊断压成 4~8 行摘要 + 日志落盘导出（解决「复制不全」）| 「复制日志（短）」「导出日志到下载」两个按钮 |
+| **0.1.8** | **9** | 见 `git log` | 修复：增益参数退化（改读增益图自身 XMP）、畸形 ISO 段崩溃、`0xFF` 填充误判、XMP/MPF 段按签名匹配、CUVA 语义未验证不再静默 | 界面同 0.1.7；日志新增「hdrgm 参数取自增益图自身 XMP」/「⚠ 语义未验证」 |
 
 ### 11.3 一眼判定手机上装的是哪版
 
@@ -664,6 +677,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 
 | 看到这个 | 版本 |
 |---|---|
+| 日志出现「hdrgm 参数取自增益图自身 XMP」或「⚠ 增益图与 probe 均未提供」 | **0.1.8** |
 | 「导出日志到下载」按钮 | **0.1.7** |
 | 「导出原图（HEIC 无增益图时用）」按钮 | ≥ 0.1.6 |
 | 「保存烘焙图到相册」按钮 | ≥ 0.1.4 |

@@ -47,7 +47,8 @@ def cmd_demo(args: argparse.Namespace) -> int:
 
 
 def cmd_inspect(args: argparse.Namespace) -> int:
-    data = open(args.src, "rb").read()
+    with open(args.src, "rb") as f:
+        data = f.read()
     src = vivid_source.parse_hdr_source(data, args.src)
     print(src.describe())
     for line in synthetic.describe_container(data):
@@ -66,6 +67,13 @@ def cmd_export(args: argparse.Namespace) -> int:
     )
     res = pipeline.export(args.src, args.out, opt)
     print(res.to_json())
+    if not res.semantics_verified:
+        # 结构自检通过 ≠ 增益语义正确。必须让调用方看到，否则「看着像 HDR 但不对」。
+        print("⚠ 语义未验证：源图未提供 hdrgm/ISO 增益参数，已按默认值封装；"
+              "结果不可当作已校准的 HDR。加 --require-verified 可让此情况直接失败。",
+              file=sys.stderr)
+        if args.require_verified:
+            return 3
     return 0 if res.ok else 2
 
 
@@ -122,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
     e.add_argument("--quality", type=int, default=92)
     e.add_argument("--gainmap-quality", type=int, default=85)
     e.add_argument("--gain-map-max", type=float, default=2.0)
+    e.add_argument("--require-verified", action="store_true",
+                   help="增益语义未经源参数验证时以退出码 3 失败（CI 门禁用）")
     e.set_defaults(func=cmd_export)
 
     b = sub.add_parser("bake", help="烘焙成普通 JPEG（HDR 效果压进 SDR，微信可见）")

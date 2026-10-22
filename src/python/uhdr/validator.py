@@ -104,9 +104,18 @@ def _validate_bytes(data: bytes, path: str = "<memory>", *, ratio_tol: float = 0
     rep.add("container.two_images", len(images) >= 2, "WARN",
             detail=f"检测到 {len(images)} 个 JPEG 图像（Ultra HDR 需要 >= 2）")
 
-    # 2. 主图 XMP
-    seg1 = jpegseg.find_segment(data, 0, 0xFFE1)
-    has_xmp = bool(seg1 and data[seg1.payload_start:seg1.payload_start + len(xmp.XMP_APP1_SIG)] == xmp.XMP_APP1_SIG)
+    # 2. 主图 XMP。必须按签名挑段，不能取「第一个 APP1」——
+    # 相机/厂商文件通常 EXIF 在 XMP 之前，取首个会把正确文件判成缺 XMP。
+    seg1 = None
+    try:
+        for seg in jpegseg.iter_header_segments(data, 0):
+            if (seg.marker == 0xFFE1
+                    and data[seg.payload_start:seg.payload_start + len(xmp.XMP_APP1_SIG)] == xmp.XMP_APP1_SIG):
+                seg1 = seg
+                break
+    except jpegseg.JpegParseError:
+        seg1 = None
+    has_xmp = seg1 is not None
     rep.add("meta.xmp_present", has_xmp, detail="存在 XMP APP1 段")
 
     directory = xmp.ContainerDirectory()
