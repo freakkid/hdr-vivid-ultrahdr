@@ -1,7 +1,7 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-24（v0.1.14：HEIC 增益图实为 **4 块 grid**，新增 `HeifGridRewriter` 重封最小 HEIF 交给系统解 —— 桌面同逻辑 `uhdr.heif_grid`，回归 48 项。真机全链路已在 v0.1.13 跑通，见 `docs/02` §2.9）
-> 读这一篇就能接手，不需要回看聊天记录。
+> 最后更新：2026-10-24 深夜（v0.1.16：**烘焙算法 v3 + 自动验收**；真机全链路已通；HEIC 增益图确认是 4 块 grid）
+> 读这一篇就能接手，不需要回看聊天记录。**先看 §0 和 §10.2，这两处是这一晚的结论。**
 
 ---
 
@@ -10,13 +10,14 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG；**并**同时产出一张「HDR 效果已烘焙进像素」的普通 JPEG（微信/任何设备可见） |
-| 到哪一步了 | **真机全链路已跑通**（v0.1.13，真实华为 HDR 样本：解析→烘焙→封装→自检→导出，产物经 Python 独立校验 **20/20**，见 `docs/02` §2.9）。剩下**微信多路径实测**与**目视确认** |
-| 下一步唯一要做的事 | 手机插线解锁 → 开 USB 调试 → `hdc file send` 推 APK → 卓易通安装 → 选图，看到界面五段日志与左右预览（§3.0） |
+| 到哪一步了 | **真机全链路已跑通**（`docs/02` §2.9：真实华为样本，产物经 Python 独立校验 **20/20**）。烘焙算法已按「手机观感」重做，并用 `tests/acceptance/` 固化成 **5/5 PASS**。剩：**微信三路径实测** + **观感最终确认** |
+| 下一步唯一要做的事 | ① 跑 `python tests/acceptance/accept.py --real <真实样本>` 确认没退化（**改任何烘焙参数都必须先跑这个**）；② 让用户确认 v0.1.16 的观感（最后一次反馈是「0.3 还是太亮」，v0.1.16 已把中高光从 +8.5% 压到 +4.6%、整体 +2.1%）；③ 仍嫌亮就把 `maxLift` 从 1.12 降到 1.05（§10.2） |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:\DevEco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。随 HarmonyOS Command Line Tools 安装，**不在仓库里**，换机器需重装（§1.3-C）|
-| 下一个真问题 | 用户那张报错的照片**已确认是真 HEIC**（`ftyp` + `heic` 品牌，8.94 MB），容器内系统转码不可用；**里面有没有增益图至今未取到**（§3.1）。v0.1.8 装上去跑一次即可：① 看 `HEIC 摘要` 的 aux / iloc 长度；② 用导出的 `_HDR.jpg` 再选一次，确认日志出现 `hdrgm 参数取自增益图自身 XMP`（v0.1.8 的解析修复是否生效）|
+| 下一个真问题 | **观感对齐缺少参照物**。目前以「源 SDR 主图的中位亮度」为基准（依据：手机显示 HDR 时参考白仍对应 SDR 1.0）。若这样仍不一致，唯一可靠办法是拿**手机截屏**当目标对齐 —— 用户暂不愿意，所以这是唯一没有客观解的部分 |
+| 已解决的真问题 | 那张 HEIC **确实有增益图**：不是 aux，而是 `tmap` 派生项引用「主图 grid + 增益图 grid（4 块 hvc1）」；且系统/微信转 JPEG 时会写成 ISO Ultra HDR（增益图 535~620 KB），**可绕行**（§3.5） |
 | 仓库 | `git@github.com:freakkid/hdr-vivid-ultrahdr.git`（私有），分支 `main` |
-| 最新提交 | 见 `git log --oneline -1`（截至 v0.1.10）|
+| 最新提交 | 见 `git log --oneline -1`（截至 v0.1.16）|
 | 交付形态 | **纯 Kotlin，APK 内 `.so` 数量为 0**。native libultrahdr 只是备选，从未编译验证 —— 别一上手就去接 NDK |
 
 ---
@@ -573,7 +574,9 @@ ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT"   # 每段都从仓库根开
 # Python 侧（一律用 venv 解释器；裸 `python` 指向 3.13.12 系统装，无 PIL/numpy）
 PY="C:/Users/ugnam/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 
-./run.sh test                              # 32 项回归
+./run.sh test                              # 48 项回归
+"$PY" tests/acceptance/accept.py --real <样本.jpg>   # 烘焙验收（6 指标，改参数必跑）
+"$PY" tests/acceptance/accept.py                     # 同上，仅合成样本（CI 用）
 ./run.sh demo                              # 端到端演示（合成源）
 PYTHONPATH=src/python "$PY" -m uhdr.cli inspect  <file>    # 容器结构诊断
 PYTHONPATH=src/python "$PY" -m uhdr.cli validate <file>    # 结构自检
@@ -683,18 +686,44 @@ Profile 绑 UDID，成本远高于收益）；不要给 `web/index.html` 投入�
 
 App 一次选图**同时产出两者**，主按钮分享烘焙图。
 
-### 10.2 算法与定档
+### 10.2 算法 v3（2026-10-24 重做，接手先读这一节）
 
 ```
-sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软膝
-     → sRGB → S 曲线 + 饱和度 → 抖动 → JPEG
+sRGB → 线性 → 按 hdrgm 还原 HDR 亮度
+     → 按 SDR 亮度加权：暗部/中间调保持 SDR，只有亮部采信 HDR
+     → 高光软膝收敛到 0.96（不是 1.0）
+     → 每像素封顶 min(target, sdr × maxLift)
+     → sRGB → 饱和度 → 抖动 → JPEG
 ```
 
-- `strength = 0.70`（目视定档，见 `docs/04-HANDOFF-bake.md` 的 **「7. B 侧定档结论」** 一节；
-  该文有重复的 §6/§7 标题，按标题文字找，别按序号找）
-- 三档 profile：`off`（仅全局）/ `local`（+局部色调映射）/ `wechat`（克制版，为二次压缩留余量）
-- 命令（`$PY` 见 §6）：`PYTHONPATH=src/python "$PY" -m uhdr.cli bake <源文件> -o out.jpg --profile local --strength 0.70`
-  （`./run.sh` 目前没有 `bake` 子命令，只能这样调；`--profile off|local|wechat`、`--anchor sdr-white|peak`）
+**为什么不是「直接乘增益再压高光」**（v2 的做法）：
+增益图在**全图都有值**（实测中位 86/255）。只要 `strength > 0`，中间调就会被一起提亮，
+而 `strength → 0` 只会连 HDR 一起丢掉 —— **调参在数学上救不回来**。
+依据：手机显示 HDR 时屏幕参考白仍对应 SDR 的 1.0，所以中间调观感必须与 SDR 一致。
+
+关键参数（`HdrBaker.Options` 与 `bake.BakeOptions` 同名同值，改一端必须改另一端）：
+
+| 参数 | 值 | 作用 | 调它会发生什么 |
+|---|---|---|---|
+| `strength` | 0.70 | 只影响高光强度 | 调小 → 高光变弱，整体亮度**不变** |
+| `blendStart/blendEnd` | 0.35 / 0.90 | SDR 亮度低于起始值完全不采信 HDR | 上移 → 更保守，HDR 感更弱 |
+| `maxLift` | 1.12 | 单像素最多比源 SDR 亮 12% | **嫌亮就降这个**；1.05 ≈ 只保留高光细节 |
+| `knee` | 0.75 | 软膝起点 | 调小 → 更早压高光 |
+| `ceiling` | 0.96 | 高光收敛上限 | 不取 1.0，否则 0.9~1.0 挤成纯白 |
+| `contrast` | 1.0 | 线性对比度 | **别开**，会把接近白的高光推成 255 |
+
+三档 profile 仍为 `off` / `local`（+LTM）/ `wechat`（克制版）。
+命令（`$PY` 见 §6）：`PYTHONPATH=src/python "$PY" -m uhdr.cli bake <源> -o out.jpg --profile local --strength 0.70`
+
+### 10.2b 验收（改任何烘焙参数后必须先跑）
+
+```bash
+python tests/acceptance/accept.py --real <真实样本.jpg>
+```
+
+6 个可计算指标，阈值与依据见 `tests/acceptance/README.md`。当前 **5/5 PASS**：
+中位差 +0.0、纯白比源多 0.00%、暗部 1.02×、SSIM 0.945~0.992。
+**不通过就不要推给用户** —— 这套验收就是为此建的。
 
 ### 10.3 烘焙相关的未完成项
 
@@ -708,7 +737,12 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 ### 10.4 踩过的坑
 
 - **`contrast` 不能在线性域做**：线性 0.5 ≈ sRGB 188，S 曲线会把暗部钉死成纯黑（实测 19.8 → 0.7）。必须在 `_linear_to_srgb` 之后。
-- 暗部亮度不能作为验收硬指标：源图自身暗部带增益，烘然后暗部必然高于原图，应看「无灰雾、无死黑、高光裁切 <1%」。
+- **调 `strength` 解决不了「整体偏亮」**（2026-10-24 血的教训）：增益图全图有值，
+  中间调必然被提亮；0.70→0.30 只把 +24 降到 +13，且高光一起没了。**必须按 SDR 亮度分流。**
+- **`contrast=1.06` 会让纯白暴涨**：它把 0.98 推成 1.0，实测纯白比源多 3.6 个百分点。已改默认 1.0。
+- **软膝别收敛到 1.0**：0.9~1.0 会挤在 0.99+，表现是大片纯白、高光没层次。收敛到 0.96。
+- **统计口径要一致**：曾用「源 BT.601 亮度 vs 输出 RGB 算术平均」算出「已对齐」，
+  实际差 +13。`tests/acceptance/` 两边统一用 `convert("L")`。
 
 
 ---
@@ -716,7 +750,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地现存：`out/HdrVividUltraHdr-0.1.14-debug.apk`（2.27 MB）、`out/HdrVividUltraHdr-0.1.13-debug.apk`（2.15 MB）。
+本地现存与手机上待装的都是 `out/HdrVividUltraHdr-0.1.16-debug.apk`（2.27 MB）。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 
