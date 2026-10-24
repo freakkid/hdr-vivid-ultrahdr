@@ -36,7 +36,17 @@ object HdrBaker {
         val whitePercentile: Float = 0.995f,
         val knee: Float = 0.75f,
         val saturation: Float = 1.12f,
-        val contrast: Float = 1.06f,
+        /** 线性对比度拉伸。1.0 = 关：它会把接近白的高光推成纯白（实测纯白占比超源 3.6 个百分点）。 */
+        val contrast: Float = 1.0f,
+        /**
+         * 高光加权区间（线性亮度）。低于 blendStart 完全保持 SDR，高于 blendEnd 完全采信 HDR。
+         *
+         * 为什么必须有：增益图在全图都有值（实测中位 86/255），直接乘会把**中间调一起提亮**，
+         * 而且数学上无法靠调 strength 消除（strength→0 只会连 HDR 一起没了）。
+         * 手机显示 HDR 时参考白仍对应 SDR 的 1.0，中间调观感与 SDR 一致，所以必须按亮度分流。
+         */
+        val blendStart: Float = 0.22f,
+        val blendEnd: Float = 0.80f,
         val dither: Boolean = true,
     )
 
@@ -99,9 +109,10 @@ object HdrBaker {
             Math.pow(2.0, (g / 255f * span + minLog2 * opt.strength).toDouble()).toFloat()
         }
 
-        // 3) 合成 HDR（RGB 三个 float 分量）+ 亮度 + 直方图
+        // 3) 合成 HDR（RGB 三个 float 分量）+ 亮度 + 直方图 + SDR 基准亮度
         val hdr = FloatArray(n * 3)
         val lum = FloatArray(n)
+        val sdrLum = FloatArray(n)   // 基准：SDR 主图亮度，决定哪里才采信 HDR
         val hist = IntArray(1024)
         var peak = 0f
 
@@ -124,6 +135,7 @@ object HdrBaker {
             hdr[i * 3 + 1] = hg
             hdr[i * 3 + 2] = hb
 
+            sdrLum[i] = 0.2126f * lr + 0.7152f * lg + 0.0722f * lb
             val l = 0.2126f * hr + 0.7152f * hg + 0.0722f * hb
             lum[i] = l
             if (l > peak) peak = l
@@ -152,31 +164,42 @@ object HdrBaker {
         }
 
         // 5) 色调映射 → 显示线性域 out（w*h*3，值域 [0,1] 附近）
+        //    关键：按 SDR 亮度加权。SDR 暗部/中间调保持原样，只有亮部才采信 HDR 结果，
+        //    否则增益图（全图有值）会把整幅画面提亮 —— 观感与手机上的 HDR 不一致。
         val ltmParams = LocalToneMapping.paramsForProfile(opt.profile)
         var ltmStats: LocalToneMapping.Stats? = null
         val out: FloatArray
         var clipped = 0
         if (ltmParams != null) {
-            // 局部色调映射：输出已是「1.0 = SDR 白点」的显示线性域，
-            // 不能再走 hdr * (mapped/lum) 全局归一化，否则会被二次压暗。
             val ltmResult = LocalToneMapping.apply(hdr, lum, w, h, white, ltmParams)
-            out = ltmResult.out
+            val mapped = ltmResult.out
             ltmStats = ltmResult.stats
+            out = FloatArray(n * 3)
+            i = 0
+            while (i < n) {
+                val ml = 0.2126f * mapped[i * 3] + 0.7152f * mapped[i * 3 + 1] + 0.0722f * mapped[i * 3 + 2]
+                val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
+                val target = sdrLum[i] * (1f - wgt) + ml * wgt
+                val scale = if (ml > 1e-6f) target / ml else 0f
+                out[i * 3] = mapped[i * 3] * scale
+                out[i * 3 + 1] = mapped[i * 3 + 1] * scale
+                out[i * 3 + 2] = mapped[i * 3 + 2] * scale
+                i++
+            }
         } else {
             out = FloatArray(n * 3)
             i = 0
             while (i < n) {
-                val hr = hdr[i * 3]
-                val hg = hdr[i * 3 + 1]
-                val hb = hdr[i * 3 + 2]
                 val l = lum[i]
                 val norm = l / white
                 if (norm > 1f) clipped++
                 val mapped = softKnee(norm, opt.knee)
-                val scale = if (l > 1e-6f) mapped / l else 0f
-                out[i * 3] = hr * scale
-                out[i * 3 + 1] = hg * scale
-                out[i * 3 + 2] = hb * scale
+                val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
+                val target = sdrLum[i] * (1f - wgt) + mapped * wgt
+                val scale = if (l > 1e-6f) target / l else 0f
+                out[i * 3] = hdr[i * 3] * scale
+                out[i * 3 + 1] = hdr[i * 3 + 1] * scale
+                out[i * 3 + 2] = hdr[i * 3 + 2] * scale
                 i++
             }
         }
@@ -253,11 +276,22 @@ object HdrBaker {
     private fun linToSrgb(v: Float): Float =
         LIN_TO_SRGB[(clamp01(v) * 1023f).toInt().coerceIn(0, 1023)]
 
-    /** knee 以下线性，以上用指数曲线有界压缩到 1.0。 */
-    private fun softKnee(x: Float, knee: Float): Float {
-        if (knee >= 1f) return if (x > 1f) 1f else x
+    /**
+     * knee 以下线性，以上用指数曲线压缩到 ceiling。
+     *
+     * ceiling 不取 1.0 是有意的：收敛到 1.0 时 0.9~1.0 会被挤在 0.99+，
+     * 表现为大片纯白、高光丢层次。留 4% 余量后高光重新拉开差距。
+     */
+    private fun softKnee(x: Float, knee: Float, ceiling: Float = 0.96f): Float {
+        if (knee >= 1f) return if (x > ceiling) ceiling else x
         if (x <= knee) return if (x < 0f) 0f else x
         val span = 1f - knee
-        return knee + span * (1f - Math.exp((-(x - knee) / span).toDouble()).toFloat())
+        return knee + (ceiling - knee) * (1f - Math.exp((-(x - knee) / span).toDouble()).toFloat())
+    }
+
+    /** 平滑阶跃：暗部 0（保持 SDR），亮部 1（采信 HDR），中间平滑过渡。 */
+    private fun smoothstep(e0: Float, e1: Float, x: Float): Float {
+        val t = ((x - e0) / maxOf(e1 - e0, 1e-6f)).coerceIn(0f, 1f)
+        return t * t * (3f - 2f * t)
     }
 }

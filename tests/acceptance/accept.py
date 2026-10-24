@@ -81,10 +81,14 @@ def measure(sdr: Image.Image, out: Image.Image) -> dict:
     shadow = s < 64
     s_shadow = float(s[shadow].mean()) if shadow.any() else 1.0
     o_shadow = float(o[shadow].mean()) if shadow.any() else 1.0
+    s_clip = float((s >= 254).mean())
+    o_clip = float((o >= 254).mean())
     return {
         "median_delta": float(np.median(o) - np.median(s)),
         "mean_delta": float(o.mean() - s.mean()),
-        "clip_ratio": float((o >= 254).mean()),
+        # 源图本身的高光就可能纯白（灯、泡沫），所以看「比源多多少」而不是绝对值
+        "clip_ratio": o_clip,
+        "clip_delta": o_clip - s_clip,
         "shadow_lift": float(o_shadow / max(s_shadow, 1e-6)),
         "ssim": float(ssim_map(s, o).mean()),
         "sat_ratio": float(_saturation(out) / max(_saturation(sdr), 1e-6)),
@@ -98,8 +102,9 @@ def judge(m: dict, th: dict) -> list[str]:
         bad.append("中位亮度偏离 %+.1f（上限 %.1f）" % (m["median_delta"], th["median_delta_max"]))
     if abs(m["mean_delta"]) > th["mean_delta_max"]:
         bad.append("均值亮度偏离 %+.1f（上限 %.1f）" % (m["mean_delta"], th["mean_delta_max"]))
-    if m["clip_ratio"] > th["clip_ratio_max"]:
-        bad.append("纯白占比 %.2f%%（上限 %.2f%%）" % (m["clip_ratio"] * 100, th["clip_ratio_max"] * 100))
+    if m["clip_delta"] > th["clip_ratio_max"]:
+        bad.append("纯白占比比源多 %.2f 个百分点（上限 %.2f）"
+                   % (m["clip_delta"] * 100, th["clip_ratio_max"] * 100))
     if m["shadow_lift"] > th["shadow_lift_max"]:
         bad.append("暗部提亮 %.2fx（上限 %.2fx）" % (m["shadow_lift"], th["shadow_lift_max"]))
     if m["ssim"] < th["ssim_min"]:

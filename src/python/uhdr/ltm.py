@@ -146,6 +146,7 @@ def apply(
     hdr_linear: np.ndarray,
     white: float,
     params: LtmParams,
+    ceiling: float = 0.96,
 ) -> tuple[np.ndarray, dict]:
     """把线性 HDR 压到显示线性域（1.0 = SDR 白点）。
 
@@ -170,8 +171,9 @@ def apply(
     base_c = _compress_highlights(base_lift, params.highlight_start)
     x_out = base_c + detail * np.float32(params.detail_gain)
 
-    # 不允许超过白点
-    x_out = np.minimum(x_out, 0.0)
+    # 不允许超过白点。收敛到 log2(ceiling) 而不是 0：
+    # 顶到 1.0 会让大片高光变成纯白、丢掉层次（实测纯白占比比源多 3.6 个百分点）。
+    x_out = np.minimum(x_out, float(np.log2(max(ceiling, 0.5))))
 
     L_out = np.exp2(x_out).astype(np.float32)
 

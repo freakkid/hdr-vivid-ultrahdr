@@ -103,9 +103,12 @@ object LocalToneMapping {
         h: Int,
         white: Float,
         params: Params,
+        /** 高光上限（线性）。不取 1.0：顶到 1.0 会让大片高光变纯白、丢层次。 */
+        ceiling: Float = 0.96f,
     ): Result {
         val n = w * h
         val invWhite = 1f / max(white, 1e-6f)
+        val ceilingLog = log2(max(ceiling, 0.5f))
 
         // x = log2(max(lum/white, 1e-5))
         val x = FloatArray(n)
@@ -126,7 +129,7 @@ object LocalToneMapping {
         i = 0
         while (i < n) {
             val b = compressHighlights(base[i] * params.rangeCompress, params.highlightStart)
-            val o = min(b + (x[i] - base[i]) * params.detailGain, 0f)
+            val o = min(b + (x[i] - base[i]) * params.detailGain, ceilingLog)
             xOut[i] = o
             if (x[i] < -4.0) { // 暗部统计：平均提升倍数
                 shadowSumX += x[i]
