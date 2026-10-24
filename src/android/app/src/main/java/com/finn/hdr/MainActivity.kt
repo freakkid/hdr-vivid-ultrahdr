@@ -285,11 +285,11 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { share(hdrFile) }
         }
 
-        // 容器里 ACTION_SEND 常被裁剪，把文件落到系统相册是最稳的出路
+        // 只保存烘焙图：HDR 效果已压进像素，任何设备/平台都能直接看到
         saveBaked = Button(this).apply {
-            text = "保存烘焙图到相册"
+            text = "保存烘焙图到本地"
             isEnabled = false
-            setOnClickListener { saveToGallery(bakedFile) }
+            setOnClickListener { saveBakedToGallery() }
         }
 
         // HEIC 解不了时的唯一出路：把原件另存到用户指定的位置（容器内 MediaStore 宿主机读不到）
@@ -418,6 +418,20 @@ class MainActivity : ComponentActivity() {
                     appendLog(HeifInspector.brief(rawBytes))
                     appendLog("—— 以下为完整结构（可跳过，排障才需要）——")
                     appendLog(HeifInspector.describe(rawBytes))
+
+                    // 增益图在这里的形态是 grid（实测华为：4 块拼 2x2），aux/tmap 都看不出来。
+                    // 重封成最小 HEIF 交给系统解码器，是目前唯一不碰 HEVC 码流的取法。
+                    appendLog("[2c/5] grid 增益图探测（重封试解，不改主流程）")
+                    appendLog(HeifGridRewriter.summary(rawBytes))
+                    HeifGridRewriter.rewrapGainMapCandidate(rawBytes)?.let { (mini, g) ->
+                        appendLog("重封 grid #${g.id}（${g.rows}x${g.cols}，${mini.size} B）")
+                        val gm = HeicDecoder.decodeMain(mini, 0)
+                        appendLog(
+                            "重封图解码：${gm.engine} ${gm.width}x${gm.height} " +
+                                if (gm.ok) "成功" else "失败（${gm.note.take(90)}）"
+                        )
+                    } ?: appendLog("没有可重封的 grid（可能不是 grid 结构）")
+
                     lastRawBytes = rawBytes
 
                     appendLog("[2b/5] 尝试解码 HEIC 主图（增益图不会被提取）")
@@ -721,39 +735,47 @@ class MainActivity : ComponentActivity() {
     }
 
     /**
-     * 保存到系统相册（MediaStore）。
-     * 容器里 `ACTION_SEND` 分享面板经常被裁剪，写进相册是更可靠的一条出路：
-     * 用户可以从相册直接发微信。
+     * 只把**烘焙图**（`_BAKED.jpg`）保存到相册。
+     *
+     * 烘焙图是「HDR 效果已经压进像素」的那张，任何设备、任何平台（含微信）都能直接看到效果，
+     * 所以只需要这一张。走两段式提交（IS_PENDING 1 → 写完 → 置 0），避免相册扫到半截文件。
      */
-    private fun saveToGallery(f: File?) {
+    private fun saveBakedToGallery() {
+        val f = bakedFile
         if (f == null || !f.exists()) {
-            infoView.text = "还没有导出的文件，请先点「导出全尺寸」"
+            say("还没有烘焙图，请先点「导出全尺寸」")
             return
         }
         if (android.os.Build.VERSION.SDK_INT < 29) {
-            infoView.text = "系统低于 Android 10，暂不支持直接写相册（请用「发送」按钮）"
-            appendLog("保存到相册已跳过：SDK=${android.os.Build.VERSION.SDK_INT} < 29")
+            say("系统低于 Android 10，暂不支持直接写相册（请用「发送烘焙图」）")
             return
         }
-        infoView.text = "保存到相册中…"
+        say("保存烘焙图中…")
         Thread {
             try {
                 val values = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.Images.Media.DISPLAY_NAME, f.name)
-                    put(android.provider.MediaStore.Images.Media.MIME_TYPE, "image/jpeg")
-                    put(android.provider.MediaStore.Images.Media.RELATIVE_PATH, "Pictures/HDRBake")
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, f.name)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/jpeg")
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Pictures/HDRBake")
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
                 }
                 val uri = contentResolver.insert(
                     android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values
                 ) ?: error("MediaStore.insert 返回 null")
                 contentResolver.openOutputStream(uri)?.use { out ->
                     f.inputStream().use { it.copyTo(out) }
+                    out.flush()
                 } ?: error("openOutputStream 返回 null")
-                appendLog("已保存到相册：Pictures/HDRBake/${f.name}")
-                runOnUiThread { infoView.text = "已保存到相册：Pictures/HDRBake/${f.name}" }
+                values.clear()
+                values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                contentResolver.update(uri, values, null, null)
+
+                val msg = "烘焙图已保存：相册/Pictures/HDRBake/${f.name}（${f.length() / 1024} KB）"
+                say(msg)
+                appendLog(msg)
             } catch (t: Throwable) {
-                appendLog("保存到相册失败\n${describe(t)}")
-                runOnUiThread { infoView.text = "保存到相册失败：${t.javaClass.simpleName}（可改用「发送」按钮）" }
+                say("保存烘焙图失败：${t.javaClass.simpleName}")
+                appendLog("保存烘焙图失败\n${describe(t)}")
             }
         }.start()
     }

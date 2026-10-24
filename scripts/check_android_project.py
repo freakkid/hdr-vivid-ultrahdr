@@ -97,6 +97,7 @@ def main() -> int:
     declared_types = {
         "UltraHdrNative", "UltraHdrPackager", "HdrSourceParser", "GainMapGeometry",
         "UltraHdrExporter", "MetadataValidator", "ShareGuidance", "MainActivity",
+        "HeifGridRewriter",
     }
     all_src = "\n".join(f.read_text(encoding="utf-8") for f in kt_files)
     for t in sorted(declared_types):
