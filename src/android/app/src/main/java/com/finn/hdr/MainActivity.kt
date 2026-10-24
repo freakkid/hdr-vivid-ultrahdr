@@ -322,7 +322,7 @@ class MainActivity : ComponentActivity() {
                 val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(ClipData.newPlainText("hdr-log", txt))
                 infoView.text = if (txt.length > 3000) {
-                    "已复制 ${txt.length} 字，但**粘贴端可能截断**；建议改用下方「导出日志到下载」"
+                    "已复制 ${txt.length} 字，但**粘贴端可能截断**；建议改用下方「导出日志（选位置）」"
                 } else {
                     "日志已复制（${txt.length} 字）"
                 }
@@ -330,8 +330,15 @@ class MainActivity : ComponentActivity() {
         }
 
         exportLogButton = Button(this).apply {
-            text = "导出日志（选保存位置）"
+            text = "导出日志（选位置）"
             setOnClickListener { saveLogDoc.launch("hdr-log-${System.currentTimeMillis()}.txt") }
+        }
+
+        // 0.1.8 及之前用 MediaStore 写到容器私有媒体库，宿主机看不到、文件管理器也难找，
+        // 只能由写入方自己删。这是一次性清理入口。
+        val purgeButton = Button(this).apply {
+            text = "清理导出残留（日志/原图/相册）"
+            setOnClickListener { purgeExports() }
         }
 
         logView = TextView(this).apply {
@@ -355,8 +362,14 @@ class MainActivity : ComponentActivity() {
         root.addView(shareHdr)
         root.addView(saveBaked)
         root.addView(exportRawButton)
-        root.addView(copyLogButton)
-        root.addView(exportLogButton)
+        // 两个日志出口并排，省一行高度 —— 按钮已经有 10 个，日志区被挤得只剩两行
+        val logButtonRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(copyLogButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(exportLogButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        root.addView(logButtonRow)
+        root.addView(purgeButton)
         root.addView(
             scroll,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -739,6 +752,57 @@ class MainActivity : ComponentActivity() {
                 appendLog("保存到相册失败\n${describe(t)}")
                 runOnUiThread { infoView.text = "保存到相册失败：${t.javaClass.simpleName}（可改用「发送」按钮）" }
             }
+        }.start()
+    }
+
+    /**
+     * 清理历史导出留在**容器私有媒体库**里的文件。
+     *
+     * 为什么必须由 App 删：0.1.8 及之前走 MediaStore，写进的是 anco 容器的私有媒体库
+     * （`/data/virt_service/rgm_hmos/...`）。宿主机 `hdc` 无权限读取，容器内的文件管理器
+     * 也未必能定位。Android 10+ 允许应用删除自己创建的媒体条目，无需任何存储权限。
+     */
+    private fun purgeExports() {
+        infoView.text = "清理中…"
+        Thread {
+            var deleted = 0
+            var failed = 0
+            val notes = StringBuilder()
+
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                val relPath = android.provider.MediaStore.MediaColumns.RELATIVE_PATH
+                val targets = listOf(
+                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI to
+                        listOf("Download/HDRLog%", "Download/HDRRaw%"),
+                    android.provider.MediaStore.Images.Media.EXTERNAL_CONTENT_URI to
+                        listOf("Pictures/HDRBake%"),
+                )
+                for ((collection, patterns) in targets) {
+                    for (p in patterns) {
+                        try {
+                            deleted += contentResolver.delete(collection, "$relPath LIKE ?", arrayOf(p))
+                        } catch (t: Throwable) {
+                            failed++
+                            notes.append("· $p: ${t.javaClass.simpleName}\n")
+                        }
+                    }
+                }
+            } else {
+                notes.append("· 系统低于 Android 10，无 MediaStore 条目\n")
+            }
+
+            // 导出缓存（cacheDir/exports），本来只保留最近 10 份
+            runCatching {
+                File(cacheDir, "exports").listFiles()?.forEach {
+                    if (it.delete()) deleted++ else failed++
+                }
+            }.onFailure { notes.append("· 缓存目录: ${it.javaClass.simpleName}\n") }
+
+            val msg = "清理完成：删除 $deleted 个文件" +
+                if (failed > 0) "，$failed 个失败（可能属于其他应用）" else ""
+            say(msg)
+            appendLog(msg)
+            if (notes.isNotEmpty()) appendLog(notes.toString().trimEnd())
         }.start()
     }
 
