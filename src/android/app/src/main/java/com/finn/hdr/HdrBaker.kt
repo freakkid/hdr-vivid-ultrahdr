@@ -47,8 +47,14 @@ object HdrBaker {
          */
         val blendStart: Float = 0.35f,
         val blendEnd: Float = 0.90f,
-        /** 单个像素相对源 SDR 的最大提亮倍数。中高光被推太高会丢色彩与层次（观感=发白）。 */
-        val maxLift: Float = 1.12f,
+        /**
+         * 单像素相对源 SDR 的最大提亮倍数（安全垫，防止 LTM 把中高光推成大片接近白）。
+         * 实测依据：192~223 这档被推 +8.5% 就能被肉眼察觉。
+         *
+         * 注意：**它不负责「强度」**。strength 的可见性靠下面那条「增量按 strength 缩放」，
+         * 因为色调映射会把 HDR 增量压掉，只靠增益乘 strength 时 0.3 与 1.0 的预览几乎一样。
+         */
+        val maxLift: Float = 1.25f,
         val dither: Boolean = true,
     )
 
@@ -58,6 +64,10 @@ object HdrBaker {
         val whitePoint: Float,
         val clippedRatio: Float,
         val maxBoost: Float,
+        /** 实际生效的提亮上限（faithful 1.05，其余 1.25） */
+        val liftCap: Float = 1f,
+        /** 输出平均亮度 / 源 SDR 平均亮度 —— 用来一眼看出 strength 是否真的起作用 */
+        val meanLift: Float = 1f,
         val profile: String = "off",
         val ltmRadiusPx: Int = 0,
         val ltmDetailGain: Float = 0f,
@@ -172,6 +182,11 @@ object HdrBaker {
         var ltmStats: LocalToneMapping.Stats? = null
         val out: FloatArray
         var clipped = 0
+        // 安全垫：逐像素最多比源 SDR 亮 maxLift 倍。faithful 档压到 1.05（几乎不提亮）。
+        val liftCap = if (opt.profile == "faithful") minOf(opt.maxLift, 1.05f) else opt.maxLift
+        // strength 作用在「HDR 相对 SDR 的增量」上：不这么做的话，色调映射会把增益差异
+        // 压平，0.30 与 1.00 的预览几乎一致（真机反馈「强度不生效」的根因）。
+        val amount = opt.strength.coerceIn(0f, 1f)
         if (ltmParams != null) {
             val ltmResult = LocalToneMapping.apply(hdr, lum, w, h, white, ltmParams)
             val mapped = ltmResult.out
@@ -181,8 +196,12 @@ object HdrBaker {
             while (i < n) {
                 val ml = 0.2126f * mapped[i * 3] + 0.7152f * mapped[i * 3 + 1] + 0.0722f * mapped[i * 3 + 2]
                 val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
-                // maxLift 封顶：LTM 抬升叠加后没必要把像素推得比源 SDR 亮太多，否则就是发白
-                val target = minOf(sdrLum[i] * (1f - wgt) + ml * wgt, sdrLum[i] * opt.maxLift)
+                val blended = sdrLum[i] * (1f - wgt) + ml * wgt
+                // 增量按 strength 缩放：0 → 完全等同源 SDR；1 → 完整 HDR 效果
+                val target = minOf(
+                    sdrLum[i] + (blended - sdrLum[i]) * amount,
+                    sdrLum[i] * liftCap,
+                )
                 if (ml > white) clipped++          // LTM 输出仍超白点：真正的过曝像素
                 val scale = if (ml > 1e-6f) target / ml else 0f
                 out[i * 3] = mapped[i * 3] * scale
@@ -199,7 +218,11 @@ object HdrBaker {
                 if (norm > 1f) clipped++
                 val mapped = softKnee(norm, opt.knee)
                 val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
-                val target = minOf(sdrLum[i] * (1f - wgt) + mapped * wgt, sdrLum[i] * opt.maxLift)
+                val blended = sdrLum[i] * (1f - wgt) + mapped * wgt
+                val target = minOf(
+                    sdrLum[i] + (blended - sdrLum[i]) * amount,
+                    sdrLum[i] * liftCap,
+                )
                 val scale = if (l > 1e-6f) target / l else 0f
                 out[i * 3] = hdr[i * 3] * scale
                 out[i * 3 + 1] = hdr[i * 3 + 1] * scale
@@ -261,12 +284,24 @@ object HdrBaker {
         val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         bmp.setPixels(result, 0, w, 0, 0, w, h)
 
+        var sumOut = 0.0
+        var sumSdr = 0.0
+        i = 0
+        while (i < n) {
+            sumOut += 0.2126f * out[i * 3] + 0.7152f * out[i * 3 + 1] + 0.0722f * out[i * 3 + 2]
+            sumSdr += sdrLum[i]
+            i++
+        }
+        val meanLift = if (sumSdr > 1e-9) (sumOut / sumSdr).toFloat() else 1f
+
         val stats = Stats(
             outSize = w to h,
             hdrPeak = peak,
             whitePoint = white,
             clippedRatio = clipped.toFloat() / n,
             maxBoost = Math.pow(2.0, maxLog2.toDouble()).toFloat(),
+            liftCap = liftCap,
+            meanLift = meanLift,
             profile = opt.profile,
             ltmRadiusPx = ltmStats?.radiusPx ?: 0,
             ltmDetailGain = ltmStats?.detailGain ?: 0f,

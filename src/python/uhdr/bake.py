@@ -54,9 +54,11 @@ class BakeOptions:
     # 手机显示 HDR 时参考白仍对应 SDR 1.0，中间调观感与 SDR 一致，所以这里必须按亮度分流。
     blend_start: float = 0.35
     blend_end: float = 0.90
-    # 单个像素相对源 SDR 的最大提亮倍数。中高光被推得太高会丢掉色彩与层次，
-    # 观感就是「画面发白」——实测 192~223 这档被推 +8.5% 就能被肉眼察觉。
-    max_lift: float = 1.12
+    # 单个像素相对源 SDR 的最大提亮倍数，**以 strength=0.70 为定档点**。
+    # 实际生效值 = 1 + (max_lift-1) * strength/0.70：0.30→≈1.11、0.70→1.25、1.00→≈1.36。
+    # 必须随 strength 缩放，否则封顶会把滑杆压死（0.30 时 boost 已 1.47x，固定封顶后
+    # 0.3 与 1.0 输出几乎一致）。封顶仍是「发白」的解药：实测 192~223 被推 +8.5% 即可见。
+    max_lift: float = 1.25
 
 
 @dataclass
@@ -147,6 +149,12 @@ def bake(
     hdr = np.maximum((sdr + off_sdr) * gain - off_hdr, 0.0).astype(np.float32)
 
     # ---- 色调映射 ----
+    # 安全垫：逐像素最多比源 SDR 亮 max_lift 倍（faithful 压到 1.05，几乎不提亮）。
+    lift_cap = min(opt.max_lift, 1.05) if opt.profile == "faithful" else opt.max_lift
+    # strength 作用在「HDR 相对 SDR 的增量」上。只让增益乘 strength 时，色调映射会把差异
+    # 压平 —— 0.30 与 1.00 的输出几乎一致，真机反馈就是「强度不生效」。
+    amount = float(np.clip(opt.strength, 0.0, 1.0))
+
     lum = (hdr * _LUMA).sum(axis=2)
     # 基准：SDR 主图的亮度。手机显示 HDR 时参考白仍对应 SDR 的 1.0，
     # 所以 SDR 亮度低的区域（暗部/中间调）观感必须保持原样，只有亮部才采信 HDR。
@@ -172,8 +180,9 @@ def bake(
         mapped_rgb = np.clip(ltm_res[0], 0.0, 1.0)
         ltm_stats = ltm_res[1]
         mapped_lum = (mapped_rgb * _LUMA).sum(axis=2)
-        target = sdr_lum * (1.0 - w) + mapped_lum * w
-        target = np.minimum(target, sdr_lum * opt.max_lift)
+        blended = sdr_lum * (1.0 - w) + mapped_lum * w
+        target = sdr_lum + (blended - sdr_lum) * amount
+        target = np.minimum(target, sdr_lum * lift_cap)
         scale = np.where(mapped_lum > 1e-6, target / np.maximum(mapped_lum, 1e-6), 0.0)
         out = np.clip(mapped_rgb * scale[..., None], 0.0, 1.0)
         norm = (out * _LUMA).sum(axis=2) / white     # 仅用于统计裁切率
@@ -181,8 +190,9 @@ def bake(
         norm = lum / white
         mapped = _soft_knee(norm, opt.knee)
         # 加权混合：暗部/中间调取 SDR 原值，亮部取压缩后的 HDR
-        target = sdr_lum * (1.0 - w) + mapped * w
-        target = np.minimum(target, sdr_lum * opt.max_lift)
+        blended = sdr_lum * (1.0 - w) + mapped * w
+        target = sdr_lum + (blended - sdr_lum) * amount
+        target = np.minimum(target, sdr_lum * lift_cap)
         scale = np.where(lum > 1e-6, target / np.maximum(lum, 1e-6), 0.0)[..., None]
         out = np.clip(hdr * scale, 0.0, 1.0)
 

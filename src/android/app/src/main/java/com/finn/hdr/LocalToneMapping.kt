@@ -69,6 +69,15 @@ object LocalToneMapping {
             blackPoint = 0.0025f,
             highlightStart = 0.72f,
         )
+        "faithful" -> Params(
+            // 保真档：几乎不做 base 收缩（0.97 ≈ 不抬暗部），只保留少量局部对比。
+            // 配合 HdrBaker 的 maxLift=1.05，整体明暗与源 SDR 基本一致。
+            radiusFrac = 1f / 48f,
+            eps = 0.2f,
+            rangeCompress = 0.97f,
+            detailGain = 1.08f,
+            highlightStart = 0.70f,
+        )
         else -> Params() // local：观感优先
     }
 

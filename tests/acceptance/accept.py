@@ -133,7 +133,7 @@ def run(real_paths: list[str], as_json: bool, update: bool) -> int:
     os.makedirs(tmp_dir, exist_ok=True)
     synth_path = os.path.join(tmp_dir, "synth_cuva.jpg")
     synthetic.write_cuva_sample(synth_path, base_long_edge=1200)
-    for profile in ("local", "off", "wechat"):
+    for profile in ("local", "off", "wechat", "faithful"):
         cases.append(("synthetic/" + profile, synth_path, profile, 0.40))
     for p in real_paths:
         for profile in ("local", "off"):

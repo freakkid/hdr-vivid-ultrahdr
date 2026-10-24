@@ -266,16 +266,20 @@ class TestCli(unittest.TestCase):
             with open(src, "wb") as f:
                 f.write(build_source())
             root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            env = dict(os.environ, PYTHONPATH=os.path.join(root, "src", "python"))
+            # 子进程输出是 UTF-8（PYTHONIOENCODING=utf-8），父进程 locale 可能是 GBK：
+            # text=True 会按 locale 解码，解码失败时 reader 线程静默死掉 → stdout 变 None。
+            # 必须显式指定 encoding。
+            env = dict(os.environ, PYTHONPATH=os.path.join(root, "src", "python"),
+                       PYTHONIOENCODING="utf-8")
             r = subprocess.run([sys.executable, "-m", "uhdr.heif_grid", src],
-                               capture_output=True, text=True, env=env)
+                               capture_output=True, text=True, encoding="utf-8", env=env)
             self.assertEqual(r.returncode, 0, r.stderr)
             self.assertIn("grid #42 2x2", r.stdout)
 
             out = os.path.join(tmp, "gm.heic")
             r2 = subprocess.run([sys.executable, "-m", "uhdr.heif_grid", src,
                                  "--rewrap", "42", "-o", out],
-                                capture_output=True, text=True, env=env)
+                                capture_output=True, text=True, encoding="utf-8", env=env)
             self.assertEqual(r2.returncode, 0, r2.stderr)
             self.assertGreater(os.path.getsize(out), 0)
 

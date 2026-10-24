@@ -140,8 +140,9 @@ def main(argv: list[str] | None = None) -> int:
     b.add_argument("--long-edge", type=int, default=2048)
     b.add_argument("--strength", type=float, default=0.70, help="增益强度 0..1（0.70 为目视定档）")
     b.add_argument("--quality", type=int, default=95)
-    b.add_argument("--profile", default="local", choices=["off", "local", "wechat"],
-                   help="off=仅全局映射 / local=加局部色调映射 / wechat=为二次压缩留余量")
+    b.add_argument("--profile", default="local", choices=["off", "local", "wechat", "faithful"],
+                   help="off=仅全局映射 / local=加局部色调映射 / wechat=为二次压缩留余量 / "
+                        "faithful=不提亮，只保留高光细节")
     b.add_argument("--anchor", default="sdr-white", choices=["sdr-white", "peak"],
                    help="白点锚定方式")
     b.set_defaults(func=cmd_bake)

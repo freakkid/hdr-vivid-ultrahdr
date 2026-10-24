@@ -77,6 +77,8 @@ class MainActivity : ComponentActivity() {
         "local" to "本地观看（local：局部色调映射）",
         "wechat" to "微信分享（wechat：克制映射+重压缩余量）",
         "off" to "仅全局映射（off：旧行为，A/B 对照）",
+        // 嫌「整体偏亮」时用这档：maxLift 1.05，几乎不提亮，只保留高光细节
+        "faithful" to "保真（faithful：不提亮，只留高光细节）",
     )
 
     private val strengthMin = 0.30f
@@ -487,14 +489,17 @@ class MainActivity : ComponentActivity() {
                 pvBase = base
                 pvGain = gain
                 appendLog("主图 ${base.width}x${base.height}  增益图 ${gain.width}x${gain.height}")
+                lastRawBytes = rawBytes      // 「导出原图」对 JPEG 同样可用（此前只在 HEIC 分支赋值）
                 runOnUiThread {
                     previewBefore.setImageBitmap(base)
                     exportButton.isEnabled = true
+                    exportRawButton.isEnabled = true
                 }
 
                 appendLog("[4/5] 生成预览")
                 renderPreviewNow()
                 appendLog("[5/5] 就绪：拖滑杆/换档位会即时重算预览；满意后点「导出全尺寸」。")
+                appendLog("（发送/保存/写入相册这几个按钮要等「导出全尺寸」完成后才亮，未导出时灰色是正常的）")
             } catch (t: Throwable) {
                 parsed = null
                 say("载入失败：${t.javaClass.simpleName}")
@@ -546,6 +551,7 @@ class MainActivity : ComponentActivity() {
                 previewAfter.setImageBitmap(baked)
                 infoView.text = "预览 ${stats.outSize.first}x${stats.outSize.second}  " +
                     "峰值 ${"%.2f".format(stats.hdrPeak)}x  " +
+                    "亮度 ${"%.2f".format(stats.meanLift)}x  " +
                     "裁切 ${"%.2f".format(stats.clippedRatio * 100)}%  " +
                     "[$profile ${"%.2f".format(strength)}]"
             }
@@ -590,6 +596,8 @@ class MainActivity : ComponentActivity() {
                 appendLog("尺寸 ${stats.outSize.first}x${stats.outSize.second}  " +
                     "峰值 ${"%.2f".format(stats.hdrPeak)}x  白点 ${"%.2f".format(stats.whitePoint)}  " +
                     "最大 boost ${"%.2f".format(stats.maxBoost)}x  裁切 ${"%.2f".format(stats.clippedRatio * 100)}%")
+                appendLog("输出亮度 ${"%.3f".format(stats.meanLift)}x（源 SDR = 1.000，上限 " +
+                    "${"%.2f".format(stats.liftCap)}x）—— 这个数随 strength 变化才说明参数生效")
                 if (profile != "off") {
                     appendLog("LTM 半径=${stats.ltmRadiusPx}px  detail=${"%.2f".format(stats.ltmDetailGain)}  " +
                         "暗部提升=${"%.2f".format(stats.ltmShadowLift)}x")

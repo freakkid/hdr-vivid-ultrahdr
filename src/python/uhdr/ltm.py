@@ -73,6 +73,17 @@ def params_for_profile(profile: str) -> LtmParams | None:
             black_point=0.0025,
             highlight_start=0.72,
         )
+    if profile == "faithful":
+        # 保真档：几乎不做 base 收缩（range_compress≈1 表示不抬暗部），
+        # 只保留少量局部对比。给「嫌亮」的用户一档不改变整体明暗的选择。
+        return LtmParams(
+            radius_frac=1.0 / 48.0,
+            eps=0.2,
+            range_compress=0.97,
+            detail_gain=1.08,
+            black_point=0.0020,
+            highlight_start=0.70,
+        )
     # local：观感优先
     return LtmParams(
         radius_frac=1.0 / 48.0,

@@ -1,6 +1,6 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-24 深夜（v0.1.16：**烘焙算法 v3 + 自动验收**；真机全链路已通；HEIC 增益图确认是 4 块 grid）
+> 最后更新：2026-10-24 深夜（v0.1.18：**烘焙强度真正生效** + `faithful` 保真档；HEIC grid 重封已实现；一键自检 `scripts/verify_bake.py`）
 > 读这一篇就能接手，不需要回看聊天记录。**先看 §0 和 §10.2，这两处是这一晚的结论。**
 
 ---
@@ -10,8 +10,8 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG；**并**同时产出一张「HDR 效果已烘焙进像素」的普通 JPEG（微信/任何设备可见） |
-| 到哪一步了 | **真机全链路已跑通**（`docs/02` §2.9：真实华为样本，产物经 Python 独立校验 **20/20**）。烘焙算法已按「手机观感」重做，并用 `tests/acceptance/` 固化成 **5/5 PASS**。剩：**微信三路径实测** + **观感最终确认** |
-| 下一步唯一要做的事 | ① 跑 `python tests/acceptance/accept.py --real <真实样本>` 确认没退化（**改任何烘焙参数都必须先跑这个**）；② 让用户确认 v0.1.16 的观感（最后一次反馈是「0.3 还是太亮」，v0.1.16 已把中高光从 +8.5% 压到 +4.6%、整体 +2.1%）；③ 仍嫌亮就把 `maxLift` 从 1.12 降到 1.05（§10.2） |
+| 到哪一步了 | **真机全链路已跑通**（`docs/02` §2.9：真实华为样本，产物经 Python 独立校验 **20/20**）。烘焙算法 v3 + 4 档 profile，本地一键自检 `scripts/verify_bake.py`（回归 53 项 + 验收含真机样例 10/10）。剩：**微信三路径实测** + **观感最终确认** |
+| 下一步唯一要做的事 | ① 改完任何烘焙参数先跑 `python scripts/verify_bake.py`（会自动从手机拉样例、跑回归与验收，**不需要人看图**）；② 让用户装 v0.1.18 后拖一次强度滑杆，确认「亮度 x.xx」数值变化、观感可接受；③ 仍嫌亮就切 `faithful` 档（§10.2），不要再来回调全局参数 |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:\DevEco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。随 HarmonyOS Command Line Tools 安装，**不在仓库里**，换机器需重装（§1.3-C）|
 | 下一个真问题 | **观感对齐缺少参照物**。目前以「源 SDR 主图的中位亮度」为基准（依据：手机显示 HDR 时参考白仍对应 SDR 1.0）。若这样仍不一致，唯一可靠办法是拿**手机截屏**当目标对齐 —— 用户暂不愿意，所以这是唯一没有客观解的部分 |
@@ -705,14 +705,22 @@ sRGB → 线性 → 按 hdrgm 还原 HDR 亮度
 
 | 参数 | 值 | 作用 | 调它会发生什么 |
 |---|---|---|---|
-| `strength` | 0.70 | 只影响高光强度 | 调小 → 高光变弱，整体亮度**不变** |
+| `strength` | 0.70（滑杆 0.30~1.00） | **按比例缩放「HDR 相对 SDR 的增量」**，不是只乘增益 | 0.30 → 几乎等同源图；1.00 → 完整效果。**必须能看出差别**，见 §10.4 |
 | `blendStart/blendEnd` | 0.35 / 0.90 | SDR 亮度低于起始值完全不采信 HDR | 上移 → 更保守，HDR 感更弱 |
-| `maxLift` | 1.12 | 单像素最多比源 SDR 亮 12% | **嫌亮就降这个**；1.05 ≈ 只保留高光细节 |
+| `maxLift` | 1.25 | 单像素最多比源 SDR 亮 25%（安全垫） | **嫌亮就降**；faithful 档固定 1.05 |
 | `knee` | 0.75 | 软膝起点 | 调小 → 更早压高光 |
 | `ceiling` | 0.96 | 高光收敛上限 | 不取 1.0，否则 0.9~1.0 挤成纯白 |
 | `contrast` | 1.0 | 线性对比度 | **别开**，会把接近白的高光推成 255 |
 
-三档 profile 仍为 `off` / `local`（+LTM）/ `wechat`（克制版）。
+四档 profile：
+
+| profile | LTM | maxLift | 用途 |
+|---|---|---|---|
+| `local`（默认） | range_compress 0.88 / detail 1.32 | 1.25 | 观感优先 |
+| `wechat` | 0.92 / 1.12 | 1.25 | 为二次压缩留余量 |
+| `off` | 无（仅全局） | 1.25 | A/B 对照旧行为 |
+| **`faithful`**（v0.1.17） | 0.97 / 1.08 | **1.05** | **嫌亮时用这档**：不做整体提亮，只保留高光细节 |
+
 命令（`$PY` 见 §6）：`PYTHONPATH=src/python "$PY" -m uhdr.cli bake <源> -o out.jpg --profile local --strength 0.70`
 
 ### 10.2b 验收（改任何烘焙参数后必须先跑）
@@ -743,6 +751,15 @@ python tests/acceptance/accept.py --real <真实样本.jpg>
 - **软膝别收敛到 1.0**：0.9~1.0 会挤在 0.99+，表现是大片纯白、高光没层次。收敛到 0.96。
 - **统计口径要一致**：曾用「源 BT.601 亮度 vs 输出 RGB 算术平均」算出「已对齐」，
   实际差 +13。`tests/acceptance/` 两边统一用 `convert("L")`。
+- **字段加了不等于落地**（2026-10-24）：Kotlin `HdrBaker.Options` 有 `maxLift`，但两个分支的
+  `target` 都没用它 —— 于是 Python 验收全绿、App 端照样过曝。两道防线已加：
+  `tests/test_profiles.py`（faithful 不得比源亮）与 `scripts/check_android_project.py`
+  的 `bake.lift_cap_applied`（要求 `liftCap` 出现 ≥3 次）。
+- **固定封顶会把强度滑杆压死**（v0.1.18）：`maxLift` 恒为 1.12 时，strength=0.30 的 boost
+  已经 1.47x，0.30 与 1.00 的输出几乎一致，真机反馈就是「烘焙强度参数不生效」。
+  修法不是调大封顶，而是把 strength 作用到「HDR 相对 SDR 的增量」上
+  （`target = sdr + (blended - sdr) * strength`），封顶退回安全垫角色。
+  回归：`tests/test_profiles.py::TestStrengthTakesEffect` 要求 0.90 比 0.35 明显更亮。
 
 
 ---
@@ -750,7 +767,7 @@ python tests/acceptance/accept.py --real <真实样本.jpg>
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地现存与手机上待装的都是 `out/HdrVividUltraHdr-0.1.16-debug.apk`（2.27 MB）。
+本地现存与手机上待装的都是 `out/HdrVividUltraHdr-0.1.18-debug.apk`（2.28 MB）。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 
@@ -782,6 +799,8 @@ python tests/acceptance/accept.py --real <真实样本.jpg>
 | **0.1.12** | **13** | 见 `git log` | **补 HEIC 增益图的第二形态**：原来只查 `auxC`，现在同时解析 `iref`（dimg/auxl/thmb）与 `tmap` 派生项。实测那张华为 HEIC 是 `aux=0` + `compat=tmap` + 有 `iref`，旧逻辑误判为「无增益图」 | 摘要多两行：`aux=N（无 aux 型辅助图）`、`compat-tmap=… tmap项=… iref=…` 及关系列表 |
 | **0.1.13** | **14** | 见 `git log` | 修 `iref` 的 ID 宽度取值（应由 iref 自身 FullBox version 决定，而非每个 reference box 首字节——后者是 from_id 高字节）；摘要补 `tmap id` 列表 | 摘要多一行 `tmap id: #NN(大小)`，可据此对上 `dimg` 关系定位主图/增益图 |
 | **0.1.14** | **15** | 见 `git log` | **HEIC grid 重封**：`HeifGridRewriter` 解析 grid/dimg/iloc/ipma，把 4 块增益图重封成最小 HEIF 交给系统 `ImageDecoder`（不碰 HEVC、不加 .so）。选图时日志多一段 `[2c/5]` | 界面不变；HEIC 日志新增 `grid #NN 2x2 输出 … ← 增益图候选`、`重封图解码：…` |
+| **0.1.17** | **18** | 见 `git log` | 新增 **`faithful`（保真）档**：maxLift 1.05、几乎不提亮，只保留高光细节 | 档位下拉多第 4 项「保真（faithful：不提亮，只留高光细节）」 |
+| **0.1.18** | **19** | 见 `git log` | **修「烘焙强度不生效」**：strength 改为缩放「HDR 相对 SDR 的增量」（此前只乘增益，被色调映射压平，0.30 与 1.00 输出几乎相同）；`maxLift` 退回安全垫（1.25）；「导出原图」对 JPEG 也可用 | 预览状态行多一段 `亮度 x.xx`；导出日志多一行「输出亮度 … 上限 …」 |
 
 ### 11.3 一眼判定手机上装的是哪版
 

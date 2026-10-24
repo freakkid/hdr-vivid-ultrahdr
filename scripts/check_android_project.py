@@ -94,6 +94,12 @@ def main() -> int:
         ok = balance["{"] == balance["}"] and balance["("] == balance[")"]
         check(f"kotlin.balanced[{f.name}]", ok, str(balance))
 
+    # 烘焙的逐像素封顶必须真的落地：v0.1.14 曾出现「加了 maxLift 字段但两个分支都没用」
+    # 的静默退化，App 端因此持续过曝，而 Python 侧验收是绿的。
+    hb_src = (JAVA / "HdrBaker.kt").read_text(encoding="utf-8")
+    check("bake.lift_cap_applied", hb_src.count("liftCap") >= 3,
+          f"HdrBaker.kt 里 liftCap 出现 {hb_src.count('liftCap')} 次（应为 1 处定义 + 2 处使用）")
+
     declared_types = {
         "UltraHdrNative", "UltraHdrPackager", "HdrSourceParser", "GainMapGeometry",
         "UltraHdrExporter", "MetadataValidator", "ShareGuidance", "MainActivity",
