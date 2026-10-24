@@ -49,6 +49,19 @@ def cmd_demo(args: argparse.Namespace) -> int:
 def cmd_inspect(args: argparse.Namespace) -> int:
     with open(args.src, "rb") as f:
         data = f.read()
+    # 容器先分流：HEIC/HEIF 走 analyze_image.py（本工具只解析 JPEG 容器），
+    # 否则 parse_hdr_source 会抛 ValueError 把 traceback 直接糊到用户脸上。
+    if len(data) >= 12 and data[4:8] == b"ftyp":
+        brand = data[8:12].decode("ascii", "replace")
+        print(f"格式=ISOBMFF({brand})  大小={len(data):,} B")
+        print("本工具只解析 JPEG 容器。HEIC/HEIF 请用：")
+        print(f'  python scripts/analyze_image.py "{args.src}" --extract')
+        print("（会导出主图与增益图 aux，可再交给 bake 链路）")
+        return 4
+    if data[:3] != b"\xff\xd8\xff":
+        print(f"不是 JPEG 也不是 ISOBMFF：前 8 字节 = {data[:8].hex(' ').upper()}", file=sys.stderr)
+        return 4
+
     src = vivid_source.parse_hdr_source(data, args.src)
     print(src.describe())
     for line in synthetic.describe_container(data):

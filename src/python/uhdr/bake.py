@@ -22,6 +22,7 @@
 """
 from __future__ import annotations
 
+import io
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -106,6 +107,36 @@ def _resize_rgb(img: Image.Image, size: tuple[int, int]) -> Image.Image:
     return img if img.size == size else img.resize(size, Image.Resampling.LANCZOS)
 
 
+def to_srgb(img: "Image.Image") -> "Image.Image":
+    """把带 ICC 的图像转到 sRGB。
+
+    为什么必须做：手机拍的 HDR 图常见 ICC 是 **Display P3**（实测
+    `sRGB EOTF with DCI-P3 Color Gamut`）。若直接丢掉 ICC，系统会按 sRGB 解释这些
+    数字，平均饱和度实测掉 8.8 个点，观感就是「烘焙图比原图灰」。
+
+    只在能拿到 ICC 且不是 sRGB 时转换；任何异常都退回原图，不让色彩管理把主链路搞挂。
+    """
+    icc = None
+    try:
+        icc = img.info.get("icc_profile")
+    except Exception:
+        return img.convert("RGB")
+    if not icc:
+        return img.convert("RGB")
+    try:
+        from PIL import ImageCms
+
+        src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+        desc = ImageCms.getProfileDescription(src).lower()
+        if "srgb" in desc and "p3" not in desc and "2020" not in desc:
+            return img.convert("RGB")
+        return ImageCms.profileToProfile(
+            img.convert("RGB"), src, ImageCms.createProfile("sRGB"), outputMode="RGB"
+        )
+    except Exception:
+        return img.convert("RGB")
+
+
 def bake(
     source: vivid_source.HdrSource,
     options: BakeOptions | None = None,
@@ -120,7 +151,8 @@ def bake(
     import io
 
     opt = options or BakeOptions()
-    base = Image.open(io.BytesIO(source.primary_jpeg)).convert("RGB")
+    # 必须做色彩空间归一：源图多为 Display P3，丢掉 ICC 会让输出明显发灰
+    base = to_srgb(Image.open(io.BytesIO(source.primary_jpeg)))
     if not source.gainmap_jpeg:
         raise ValueError("源图没有增益图，只能走纯 SDR 导出")
 
