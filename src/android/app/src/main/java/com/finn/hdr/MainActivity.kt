@@ -783,6 +783,9 @@ class MainActivity : ComponentActivity() {
         val opt = BitmapFactory.Options().apply {
             inSampleSize = sample
             inPreferredConfig = Bitmap.Config.ARGB_8888
+            // 源图 ICC 常是 Display P3；不在这里转成 sRGB，丢掉 ICC 后系统会按 sRGB 解释，
+            // 平均饱和度实测掉 8.8 个点（观感「烘焙图比原图灰」）。minSdk=26 支持该字段。
+            inPreferredColorSpace = android.graphics.ColorSpace.get(android.graphics.ColorSpace.Named.SRGB)
         }
         return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opt)
             ?: error("解码失败（sample=$sample, 源=${bounds.outWidth}x${bounds.outHeight}）")

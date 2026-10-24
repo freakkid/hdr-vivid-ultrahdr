@@ -256,7 +256,12 @@ def main() -> int:
         [sys.executable, os.path.join(ROOT, "tests", "android_parity", "run_grid_parity.py")],
     )))
     if args.apk:
-        results.append(("构建推送", build_and_push()))
+        # 门禁：任何一项本地自检没过，就不构建、不推送 —— 打包必须站在全绿之上
+        if any(not ok for _, ok in results):
+            print("\n[apk] 跳过构建：本地自检未全部通过（先修绿再打包）")
+            results.append(("构建推送", False))
+        else:
+            results.append(("构建推送", build_and_push()))
 
     print("\n" + "=" * 72)
     for name, ok in results:

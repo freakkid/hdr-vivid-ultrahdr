@@ -120,7 +120,8 @@ def bake_and_measure(src: vivid_source.HdrSource,
     opt = bake.BakeOptions(long_edge=long_edge, profile=profile, strength=strength)
     data, _stats = bake.bake(src, opt)
     out = Image.open(io.BytesIO(data)).convert("RGB")
-    sdr = Image.open(io.BytesIO(src.primary_jpeg)).convert("RGB")
+    # 与烘焙端一致：源图先转 sRGB（否则 P3 图会被当成「更灰」的对照基准）
+    sdr = bake.to_srgb(Image.open(io.BytesIO(src.primary_jpeg)))
     if sdr.size != out.size:
         sdr = sdr.resize(out.size, Image.Resampling.LANCZOS)
     return sdr, out, measure(sdr, out)

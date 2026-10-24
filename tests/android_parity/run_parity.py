@@ -108,7 +108,9 @@ def run_case(java: str, path: str, profile: str, strength: float, long_edge: int
         return {"case": os.path.basename(path), "skip": "无增益图或元数据"}, True
     meta = src.meta
 
-    base = Image.open(io.BytesIO(src.primary_jpeg)).convert("RGB")
+    # 与两端实现一致：先把源图从自身 ICC（多为 Display P3）转到 sRGB 再喂进去，
+    # 否则对照的是「双方都没做色彩管理」的旧行为
+    base = bake_mod.to_srgb(Image.open(io.BytesIO(src.primary_jpeg)))
     gain = Image.open(io.BytesIO(src.gainmap_jpeg)).convert("RGB")
     cur = max(base.size)
     if cur > long_edge:

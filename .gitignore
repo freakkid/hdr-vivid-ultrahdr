@@ -47,3 +47,7 @@ out/visual/
 # 手机截屏（含状态栏、通知、电量等设备状态，不入库）
 out/screen_*.jpeg
 out/screen_*.jpg
+
+# Windows 保留名：MSYS 把 /dev/null 改写成当前目录下的真实文件 NUL
+NUL
+nul
