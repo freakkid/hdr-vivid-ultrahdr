@@ -217,10 +217,12 @@ object HeifInspector {
             val iref = metaChildren.firstOrNull { it.type == "iref" }
             if (iref != null) {
                 try {
-                    // iref 是 full box：4 字节 version+flags，之后是若干 reference box
+                    // iref 是 FullBox：4 字节 version+flags，之后是若干 reference box。
+                    // **ID 宽度由 iref 自身的 version 决定**，不是每个 reference box 的第一字节
+                    // （那是 from_item_ID 的高字节——按子 box 取 version 会偶发把 ID 读错）。
+                    val irefVer = if (iref.payloadStart < b.size) b[iref.payloadStart].toInt() and 0xFF else 0
+                    val idBytes = if (irefVer == 0) 2 else 4
                     for (r in child(b, iref, 4)) {
-                        val ver = b[r.payloadStart].toInt() and 0xFF
-                        val idBytes = if (ver == 0) 2 else 4
                         val endR = minOf(r.start + r.size, b.size)
                         var q = r.payloadStart + 4
                         if (q + idBytes + 2 > endR) continue
@@ -368,6 +370,12 @@ object HeifInspector {
             sb.append("compat-tmap=").append(if (s.declaredTmap) "是" else "否")
                 .append("  tmap项=").append(if (s.hasTmapItem) "有" else "无")
                 .append("  iref=").append(s.refs.size).append('\n')
+            val tm = s.items.filter { it.type == "tmap" }
+            if (tm.isNotEmpty()) {
+                sb.append("  tmap id: ")
+                    .append(tm.joinToString(", ") { "#${it.id}(${fmtSize(it.size)})" })
+                    .append('\n')
+            }
             for (r in s.refs.take(4)) sb.append("  · ").append(r).append('\n')
             if (s.refs.size > 4) {
                 sb.append("  · …（其余 ").append(s.refs.size - 4).append(" 条见完整结构）\n")

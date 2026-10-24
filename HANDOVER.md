@@ -10,7 +10,7 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG；**并**同时产出一张「HDR 效果已烘焙进像素」的普通 JPEG（微信/任何设备可见） |
-| 到哪一步了 | 两条链路（Ultra HDR 容器、像素烘焙）**代码全部完成**，自动化验证全绿（回归 32 / 静态自检 45 / APK 构建通过）。**v0.1.8 已实机验证界面与 HEIC 主图解码**，v0.1.12（iref/tmap 解析 + 全屏日志）刚推到手机待重装 |
+| 到哪一步了 | 两条链路（Ultra HDR 容器、像素烘焙）**代码全部完成**，自动化验证全绿（回归 32 / 静态自检 45 / APK 构建通过）。**v0.1.8 已实机验证界面与 HEIC 主图解码**，v0.1.13（iref 修正 + tmap id）刚推到手机待重装 |
 | 下一步唯一要做的事 | 手机插线解锁 → 开 USB 调试 → `hdc file send` 推 APK → 卓易通安装 → 选图，看到界面五段日志与左右预览（§3.0） |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:\DevEco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。随 HarmonyOS Command Line Tools 安装，**不在仓库里**，换机器需重装（§1.3-C）|
@@ -137,7 +137,7 @@ HDC="C:/DevEco/command-line-tools/sdk/default/openharmony/toolchains/hdc.exe"
 ## 2. 基线状态
 
 Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 32 项、静态自检 45 项、
-APK 可构建（**v0.1.12 / versionCode 13**）。**已完成项不在此罗列**——证据在 `git log` 与
+APK 可构建（**v0.1.13 / versionCode 14**）。**已完成项不在此罗列**——证据在 `git log` 与
 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
 尚未做的只有 §3。
 
@@ -194,9 +194,9 @@ SAF 按钮保留，权当「让用户能在容器内自己找到文件」，不�
 
 ## 3. 未完成（按优先级）
 
-### 3.0 【P0，唯一的阻塞项】把 v0.1.12 装到手机并跑一次
+### 3.0 【P0，唯一的阻塞项】把 v0.1.13 装到手机并跑一次
 
-代码侧没有已知阻塞。**APK 已构建好（`out/HdrVividUltraHdr-0.1.12-debug.apk`，2.15 MB）。**
+代码侧没有已知阻塞。**APK 已构建好（`out/HdrVividUltraHdr-0.1.13-debug.apk`，2.15 MB）。**
 v0.1.8 已在真机上跑通（界面 9 按钮、HEIC 主图 `4320x5760` 解码成功）；
 **v0.1.9 之后（SAF 导出、清理残留）还没装过**——这两项是为解决「容器内写在私有存储、
 宿主机取不出来」加的，落点是否通要靠 §3.0 的实操确认。
@@ -214,8 +214,8 @@ HDC="C:/DevEco/command-line-tools/sdk/default/openharmony/toolchains/hdc.exe"
 
 # 3) 再推新包（用绝对锚点，不依赖当前目录）
 cd "$(git rev-parse --show-toplevel)/out"
-"$HDC" file send HdrVividUltraHdr-0.1.12-debug.apk \
-  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.12.apk
+"$HDC" file send HdrVividUltraHdr-0.1.13-debug.apk \
+  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.13.apk
 
 # 4) 必须看到一行 2.15 MB 的 0.1.10-debug.apk，否则推失败
 "$HDC" shell "ls -l /storage/media/100/local/files/Docs/Download/*.apk"
@@ -564,15 +564,15 @@ bash ../../scripts/fetch-libultrahdr.sh                 # 需要 native 时
 # 真机 —— 鸿蒙（当前设备，用 hdc）
 HDC="C:/DevEco/command-line-tools/sdk/default/openharmony/toolchains/hdc.exe"
 cd "$ROOT" && "$HDC" list targets -v        # [Empty] = 没连上
-cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.12-debug.apk \
-  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.12.apk
+cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.13-debug.apk \
+  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.13.apk
 "$HDC" shell "ls -l /storage/media/100/local/files/Docs/Download/*.apk"   # 必须出现 2.15 MB 的 0.1.10-debug.apk；只有旧包=推失败
 "$HDC" shell "snapshot_display -f /data/local/tmp/s.jpeg"   # 截屏
 cd "$ROOT/out" && "$HDC" file recv /data/local/tmp/s.jpeg "screen_$(date +%H%M%S).jpeg"
   # 别覆盖 phone_screen.jpeg——它已入库且被 §8 列为隐私文件
 
 # 真机 —— 安卓（旧 Mate 30 / 模拟器，用 adb）
-cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.12-debug.apk
+cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.13-debug.apk
 F="cache/exports/IMG_xxxx_HDR.jpg"       # 换成实际文件名，别照抄 <file> 占位符
 adb exec-out run-as com.finn.hdr cat "$F" > pulled.jpg \
   && test -s pulled.jpg || echo "拉取失败或文件不存在"   # 重定向会掩盖失败，必须 test -s
@@ -686,7 +686,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地现存：`out/HdrVividUltraHdr-0.1.12-debug.apk`（2.15 MB）。
+本地现存：`out/HdrVividUltraHdr-0.1.13-debug.apk`（2.15 MB）。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 
@@ -716,6 +716,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 | 0.1.10 | 11 | 见 `git log` | 新增**清理导出残留**：删除 0.1.8 及之前写进容器私有媒体库的 HDRLog / HDRRaw / HDRBake | 「清理导出残留」按钮；两个日志按钮并排成一行 |
 | 0.1.11 | 12 | 见 `git log` | 新增**全屏查看日志**：容器写出的文件宿主机一律读不到（MediaStore / SAF 均实测失败），**屏幕是唯一跨容器通道** | 「查看全部日志（全屏）」按钮，点开为 460dp 可滚动对话框，`HEIC 摘要` 在顶部 |
 | **0.1.12** | **13** | 见 `git log` | **补 HEIC 增益图的第二形态**：原来只查 `auxC`，现在同时解析 `iref`（dimg/auxl/thmb）与 `tmap` 派生项。实测那张华为 HEIC 是 `aux=0` + `compat=tmap` + 有 `iref`，旧逻辑误判为「无增益图」 | 摘要多两行：`aux=N（无 aux 型辅助图）`、`compat-tmap=… tmap项=… iref=…` 及关系列表 |
+| **0.1.13** | **14** | 见 `git log` | 修 `iref` 的 ID 宽度取值（应由 iref 自身 FullBox version 决定，而非每个 reference box 首字节——后者是 from_id 高字节）；摘要补 `tmap id` 列表 | 摘要多一行 `tmap id: #NN(大小)`，可据此对上 `dimg` 关系定位主图/增益图 |
 
 ### 11.3 一眼判定手机上装的是哪版
 
