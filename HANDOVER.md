@@ -178,7 +178,12 @@ Python 侧 `int.from_bytes` 传 `'<'` 导致 EXIF Make 永远缺失、`--anchor`
 排查结论是容器存储隔离（见 §5.2b），`hdc` 侧三条路全封死：
 `shell` 无权限 → `file recv` 也无权限 → `hdc smode` 零售版禁用。
 导出通道因此改为 SAF `ACTION_CREATE_DOCUMENT`（由系统文件选择器提供目标位置）。
-**这条改动只有编译验证，落点是否真在宿主机可见区还没确认**。
+
+**v0.1.10 装机实测：SAF 也不行。** 保存后宿主机 `Download`/`Documents`/`Desktop` 全空，
+`find /storage/media/100/local/files -name 'hdr-log-*'` 无结果——容器的 DocumentsUI 同样是容器组件，
+选中的位置仍在容器私有文件系统里。**结论：宿主机无法以任何方式读取容器文件，
+唯一可用出口是剪贴板**（App 写剪贴板 → 用户在宿主机应用里粘贴）。
+SAF 按钮保留，权当「让用户能在容器内自己找到文件」，不再指望它跨容器。
 
 
 ---
@@ -479,7 +484,7 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 | **MTP 不是「没有」，是「只能读不能写」** | 早期文档写「WPD 为空」，那是查法错了：`Get-PnpDevice -Class WPD` 看不到，得用 `pnputil /enum-devices /connected` 才看到 `HUAWEI Mate 70`（驱动 `wpdmtp.inf`，已启动）| 读取方向可用（成功拉过文件）；**写入方向 `Shell.Application.CopyHere` 全部静默丢弃**，四种 flags/对象形式都试过。结论：传文件用 hdc，别用 MTP |
 | 容器内 App 对外不可见 | `bm dump -n com.finn.hdr` 查不到 | 卓易通是隔离沙箱（iSulad）。**hdc 不能安装、不能启动容器内的 App**，这两步必须人工 |
 | 相册读不到 | `ls /storage/media/100/local/files/Docs/DCIM` 为空 | 鸿蒙相册在受保护媒体库。**拿不到用户照片原件**，只能靠 App 屏幕日志反馈 |
-| **容器内 MediaStore 写的文件宿主机读不到** | App 显示「日志已导出：下载/HDRLog/x.txt（2238 字）」，宿主机 `Docs/Download` 下根本没有 `HDRLog` | 安卓兼容层（anco）的媒体库是**私有**的，真实落点是 `/data/virt_service/rgm_hmos/anco_hmos_data/media/0/`：`ls` 与 `hdc file recv` 全部 **Permission denied**，`hdc smode` 报 `Cannot set root run mode in undebuggable version`（零售版不可提权）。容器内「下载」≠ 宿主机 `Docs/Download`（后者是 sharefs，只负责把文件送进去）。**0.1.9 起导出改走 SAF（用户选位置）** |
+| **容器内 MediaStore 写的文件宿主机读不到** | App 显示「日志已导出：下载/HDRLog/x.txt（2238 字）」，宿主机 `Docs/Download` 下根本没有 `HDRLog` | 安卓兼容层（anco）的媒体库是**私有**的，真实落点是 `/data/virt_service/rgm_hmos/anco_hmos_data/media/0/`：`ls` 与 `hdc file recv` 全部 **Permission denied**，`hdc smode` 报 `Cannot set root run mode in undebuggable version`（零售版不可提权）。容器内「下载」≠ 宿主机 `Docs/Download`（后者是 sharefs，只负责把文件送进去）。**0.1.9 起导出改走 SAF（用户选位置）**。⚠️ **SAF 也打不通**：v0.1.10 实测「导出日志（选位置）」保存后，宿主机 `Download`/`Documents`/`Desktop` 全空、`find /storage/media/100/local/files` 无结果——**容器的 DocumentsUI 也是容器组件，目标 URI 仍指向容器私有文件系统**。宿主机唯一可用出口是**剪贴板**（App 复制 → 用户在宿主机应用里粘贴），这条已多次验证可行 |
 | APK 可写的落地目录 | —— | `/storage/media/100/local/files/Docs/Download/`（hdc `file send` 目标就是这里）|
 | 微信接收改名 | 文件名被加 `.1`，点击无法安装 | 文件管理 → 重命名，去掉 `.1` 恢复 `.apk`（华为官方说明）|
 | 容器内选图受限 | 系统 Photo Picker 可能不存在，`PickVisualMedia` 直接报错 | App 已内置三条通道自动退化（PickVisualMedia → OpenDocument → GetContent）+ 独立按钮。见 §3.0 |
