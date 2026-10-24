@@ -13,7 +13,7 @@
 | 到哪一步了 | 两条链路（Ultra HDR 容器、像素烘焙）**代码全部完成**，自动化验证全绿（回归 32 / 静态自检 45 / APK 构建通过）。**v0.1.8 已实机验证界面与 HEIC 主图解码**，v0.1.10（SAF 导出 + 清理残留）刚推到手机待重装 |
 | 下一步唯一要做的事 | 手机插线解锁 → 开 USB 调试 → `hdc file send` 推 APK → 卓易通安装 → 选图，看到界面五段日志与左右预览（§3.0） |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
-| 手机调试工具 | **`C:/Users/ugnam/hdc_official/hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。这是**机器级工具，不在仓库里**，换机器需重新获取（§1.3-C、`docs/03` §3.8）|
+| 手机调试工具 | **`C:\DevEco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。随 HarmonyOS Command Line Tools 安装，**不在仓库里**，换机器需重装（§1.3-C）|
 | 下一个真问题 | 用户那张报错的照片**已确认是真 HEIC**（`ftyp` + `heic` 品牌，8.94 MB），容器内系统转码不可用；**里面有没有增益图至今未取到**（§3.1）。v0.1.8 装上去跑一次即可：① 看 `HEIC 摘要` 的 aux / iloc 长度；② 用导出的 `_HDR.jpg` 再选一次，确认日志出现 `hdrgm 参数取自增益图自身 XMP`（v0.1.8 的解析修复是否生效）|
 | 仓库 | `git@github.com:freakkid/hdr-vivid-ultrahdr.git`（私有），分支 `main` |
 | 最新提交 | 见 `git log --oneline -1`（截至 v0.1.10）|
@@ -112,21 +112,25 @@ Windows 特有坑：Git Bash 会把 `adb shell` 里的 `/sdcard/...` 改写成
 双实现数值对照（需 kotlinc，见 `tests/ltm_parity/run_parity.sh`）：
 `bash tests/ltm_parity/run_parity.sh`（kotlinc 缺失时自动跳过，不算失败）。
 
-**C. 鸿蒙调试工具 hdc（机器级，两机都需要各自装）**
+**C. 鸿蒙调试工具 hdc（2026-10-24 起走官方 Command Line Tools）**
 
 | 项 | 值 |
 |---|---|
-| 路径（当前这台） | `C:/Users/ugnam/hdc_official/hdc.exe`（5.5 MB，Ver 3.2.0f）|
-| 来源 | 华为 Command Line Tools（Windows 版）的 `sdk/default/openharmony/toolchains/` |
-| 是否随仓库走 | **否**。`.gitignore` 不排除也没入库，换机器必须重新获取 |
+| 工具根目录 | `C:\DevEco\command-line-tools\`（HarmonyOS Command Line Tools 26.0.0.851，绿色免安装，7.68 GB）|
+| hdc 路径 | `C:\DevEco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe`（Ver 3.2.0f）|
+| 其余入口 | `bin\` 下 `hvigorw`(6.26.8) / `ohpm`(26.0.0.630) / `codelinter` / `hstack` / `arktsdoc` / `Emulator`；内置 Node v24.14.1 |
+| 用户环境变量 | `DEVECO_SDK_HOME=C:\DevEco\command-line-tools\sdk`；用户 `PATH` 追加 `bin` 与 `sdk\default\openharmony\toolchains` |
+| 是否随仓库走 | **否**。换机器需重装一次；本机已实测 `hdc -v` / `ohpm -v` / 设备连接均正常 |
+| 与旧路径关系 | 旧的 `C:/Users/ugnam/hdc_official/hdc.exe` 是单拷出来的副本，可删；两者版本同为 3.2.0f |
 
 ```bash
-HDC="C:/Users/ugnam/hdc_official/hdc.exe"
+HDC="C:/DevEco/command-line-tools/sdk/default/openharmony/toolchains/hdc.exe"
 "$HDC" -v                       # Ver: 3.2.0f
 "$HDC" list targets -v          # 正常应显示序列号；[Empty] = 没连上
 ```
 
-获取方式与三个坑（**单拷 `hdc.exe` 会 exit 127**）见 `docs/03-toolchain-setup.md` §3.8。
+> 早先的坑（**只拷 `hdc.exe` 单文件会 exit 127**，缺同目录 DLL）对官方工具链不适用，
+> 但 `docs/03-toolchain-setup.md` §3.8 记录了当时的获取经过，留作历史。
 
 ---
 
@@ -198,7 +202,7 @@ v0.1.8 已在真机上跑通（界面 9 按钮、HEIC 主图 `4320x5760` 解码�
 宿主机取不出来」加的，落点是否通要靠 §3.0 的实操确认。
 
 ```bash
-HDC="C:/Users/ugnam/hdc_official/hdc.exe"
+HDC="C:/DevEco/command-line-tools/sdk/default/openharmony/toolchains/hdc.exe"
 
 # 1) 确认连上（[Empty] 就是没连：需解锁屏幕 + USB 调试 + 手机上点允许调试）
 "$HDC" list targets -v
@@ -552,7 +556,7 @@ bash ../../scripts/fetch-libultrahdr.sh                 # 需要 native 时
 ./gradlew assembleDebug -PwithNative=true
 
 # 真机 —— 鸿蒙（当前设备，用 hdc）
-HDC="C:/Users/ugnam/hdc_official/hdc.exe"
+HDC="C:/DevEco/command-line-tools/sdk/default/openharmony/toolchains/hdc.exe"
 cd "$ROOT" && "$HDC" list targets -v        # [Empty] = 没连上
 cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.10-debug.apk \
   /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.10.apk
