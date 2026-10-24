@@ -434,7 +434,7 @@ class MainActivity : ComponentActivity() {
                             previewAfter.setImageDrawable(null)
                         }
                         say("HEIC 主图已显示，但增益图未提取 —— 无法烘焙 HDR 效果。")
-                        appendLog("→ 结论：能看到画面，但烘不出 HDR。若要保住效果需提取增益图（见下方 aux URN）。")
+                        appendLog("→ 结论：主图可显示，但增益图未提取。要烘 HDR 需先确认形态——看上方摘要的 aux / iref / tmap 三项。")
                         appendLog("→ 可点「导出原图」把 .heic 存到相册，用微信发出来在桌面端处理。")
                     } else {
                         say("HEIC 无法解码：容器里缺 HEIF/HEVC 解码器。")

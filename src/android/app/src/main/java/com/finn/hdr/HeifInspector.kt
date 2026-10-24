@@ -29,9 +29,26 @@ object HeifInspector {
         val items: List<Item> = emptyList(),
         val auxUrns: List<String> = emptyList(),
         val props: List<String> = emptyList(),
+        /** iref 关系，形如 `dimg #41 -> #42`、`auxl #42 -> #41`、`thmb #41 -> #3`。 */
+        val refs: List<String> = emptyList(),
         val error: String? = null,
     ) {
         val hasAux: Boolean get() = auxUrns.isNotEmpty()
+
+        /**
+         * ISO 21496-1 的增益图在 HEIF 里有两种形态，只查 aux 会漏：
+         *  ① aux item：`auxC` 里带 URN，且 iref 有 `auxl` 关系
+         *  ② derived item：item type 为 `tmap`，通过 iref 的 `dimg` 指向主图与增益图
+         * 后者在 ftyp 的 compat 里会声明 `tmap`，但**不会**出现在 auxC 里。
+         */
+        val hasTmapItem: Boolean get() = items.any { it.type == "tmap" }
+
+        val declaredTmap: Boolean get() = compat.any { it.contains("tmap", true) }
+
+        val hasDimgRef: Boolean get() = refs.any { it.startsWith("dimg") }
+
+        /** 有 aux 型或 tmap 派生型增益图的迹象。 */
+        val maybeGainMap: Boolean get() = likelyGainMap || hasTmapItem || (declaredTmap && (hasDimgRef || items.size > 1))
 
         /** 增益图候选：ISO 21496-1 或厂商 hdrgainmap。 */
         val gainMapUrns: List<String>
@@ -195,6 +212,36 @@ object HeifInspector {
                 }
             }
 
+            // ---- 引用关系（iref）：tmap 派生增益图只在这里体现，auxC 里没有 ----
+            val refs = ArrayList<String>()
+            val iref = metaChildren.firstOrNull { it.type == "iref" }
+            if (iref != null) {
+                try {
+                    // iref 是 full box：4 字节 version+flags，之后是若干 reference box
+                    for (r in child(b, iref, 4)) {
+                        val ver = b[r.payloadStart].toInt() and 0xFF
+                        val idBytes = if (ver == 0) 2 else 4
+                        val endR = minOf(r.start + r.size, b.size)
+                        var q = r.payloadStart + 4
+                        if (q + idBytes + 2 > endR) continue
+                        val from = readId(b, q, idBytes)
+                        q += idBytes
+                        val cnt = ((b[q].toInt() and 0xFF) shl 8) or (b[q + 1].toInt() and 0xFF)
+                        q += 2
+                        val tos = ArrayList<String>()
+                        var k = 0
+                        while (k < cnt && q + idBytes <= endR) {
+                            tos.add("#" + readId(b, q, idBytes))
+                            q += idBytes
+                            k++
+                        }
+                        refs.add("${r.type} #$from -> ${tos.joinToString(",")}")
+                    }
+                } catch (t: Throwable) {
+                    err = (err ?: "") + " iref 解析中断：${t.javaClass.simpleName}"
+                }
+            }
+
             return Summary(
                 isIsobmff = true,
                 topBoxes = top.map { it.type },
@@ -205,6 +252,7 @@ object HeifInspector {
                 items = items,
                 auxUrns = auxUrns,
                 props = props,
+                refs = refs,
                 error = err,
             )
         } catch (t: Throwable) {
@@ -272,6 +320,9 @@ object HeifInspector {
         return v
     }
 
+    /** 读 item_ID（ver=0 时 2 字节，ver≥1 时 4 字节）。 */
+    private fun readId(b: ByteArray, at: Int, bytes: Int): Long = readN(b, at, bytes.toLong())
+
     fun fmtSize(n: Long): String = when {
         n < 0 -> "?"
         n >= 1024 * 1024 -> String.format("%.1fMB", n / 1048576.0)
@@ -305,10 +356,22 @@ object HeifInspector {
         sb.append(" item=").append(s.items.size).append('\n')
 
         if (s.auxUrns.isEmpty()) {
-            sb.append("aux=0 → 没有辅助图，不是 HDR\n")
+            // 只说明「没有 aux 型增益图」，不能推出「没有增益图」——见下面的 iref / tmap
+            sb.append("aux=0（无 aux 型辅助图）\n")
         } else {
             sb.append("aux=").append(s.auxUrns.size).append('\n')
             for (u in s.auxUrns) sb.append("  · ").append(u).append(tagOf(u)).append('\n')
+        }
+
+        // ISO 21496-1 的第二形态：tmap 派生项，关联关系在 iref 的 dimg 里，auxC 完全看不到
+        if (s.declaredTmap || s.hasTmapItem || s.refs.isNotEmpty()) {
+            sb.append("compat-tmap=").append(if (s.declaredTmap) "是" else "否")
+                .append("  tmap项=").append(if (s.hasTmapItem) "有" else "无")
+                .append("  iref=").append(s.refs.size).append('\n')
+            for (r in s.refs.take(4)) sb.append("  · ").append(r).append('\n')
+            if (s.refs.size > 4) {
+                sb.append("  · …（其余 ").append(s.refs.size - 4).append(" 条见完整结构）\n")
+            }
         }
 
         s.primaryItem?.let {
@@ -324,8 +387,10 @@ object HeifInspector {
 
         sb.append("结论：").append(
             when {
-                s.likelyGainMap -> "有增益图（HDR 照片），值得做提取"
-                !s.hasAux -> "无增益图，普通 SDR"
+                s.likelyGainMap -> "有增益图（aux 型），可直接提取"
+                s.hasTmapItem -> "有 tmap 派生项 → 增益图走 derived item，需按 iref 提取"
+                s.declaredTmap && s.hasDimgRef -> "声明 tmap 且有 dimg → 很可能是派生型增益图，需进一步解析"
+                !s.hasAux -> "未发现增益图迹象，普通 SDR"
                 else -> "有辅助图但非增益图"
             }
         ).append('\n')
@@ -350,13 +415,13 @@ object HeifInspector {
         }
         sb.append("meta 子 box: ").append(s.metaChildren.joinToString(" ")).append('\n')
         sb.append("item 数: ").append(s.items.size).append('\n')
-        for (it in s.items.take(20)) {
+        for (it in s.items.take(40)) {
             sb.append("  #").append(it.id).append(' ').append(it.type)
             if (it.name.isNotBlank()) sb.append(" name=").append(it.name)
             if (it.size >= 0) sb.append(' ').append(fmtSize(it.size))
             sb.append('\n')
         }
-        if (s.items.size > 20) sb.append("  …（其余 ${s.items.size - 20} 个略）\n")
+        if (s.items.size > 40) sb.append("  …（其余 ${s.items.size - 40} 个略）\n")
         if (s.props.isNotEmpty()) {
             sb.append("属性 box: ").append(s.props.joinToString(" ")).append('\n')
         }
@@ -365,6 +430,13 @@ object HeifInspector {
         } else {
             sb.append("aux URN:\n")
             for (u in s.auxUrns) sb.append("  ").append(u).append(tagOf(u)).append('\n')
+        }
+        if (s.refs.isEmpty()) {
+            sb.append("iref 关系: 无\n")
+        } else {
+            sb.append("iref 关系（dimg/auxl/thmb = 派生/辅助/缩略图引用）:\n")
+            for (r in s.refs.take(40)) sb.append("  ").append(r).append('\n')
+            if (s.refs.size > 40) sb.append("  …（其余 ${s.refs.size - 40} 条略）\n")
         }
         s.error?.let { sb.append("注意：").append(it).append('\n') }
         return sb.toString()
