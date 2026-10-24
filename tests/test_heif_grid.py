@@ -208,6 +208,16 @@ class TestRewrap(unittest.TestCase):
                 self.assertGreaterEqual(off, lo, f"#{item.item_id} 偏移落在 mdat 之前")
                 self.assertLessEqual(off + length, hi, f"#{item.item_id} 越出 mdat")
 
+    def test_rewrap_preserves_properties(self):
+        blob = self.heif.rewrap(42)
+        again = HeifGrids(blob)
+        grid_props = [t for t, _ in again.properties_of(42)]
+        self.assertIn("ispe", grid_props)
+        tile_props = again.properties_of(43)
+        self.assertEqual([t for t, _ in tile_props], ["hvcC", "ispe"])
+        # hvcC 决定 HEVC 参数集，必须逐字节一致，否则解不出画面
+        self.assertEqual(tile_props[0][1], self.heif.properties_of(43)[0][1])
+
     def test_rewrap_main_grid(self):
         blob = self.heif.rewrap(50)
         again = HeifGrids(blob)

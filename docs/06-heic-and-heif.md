@@ -76,10 +76,39 @@ FF D8 FF          → JPEG
 
 ---
 
+## 4.1 实测更正：增益图是 4 块 grid（2026-10-24）
+
+真实华为样张（7 张，结构一致）推翻了此前「增益图 = aux item / tmap 参数块」的猜测：
+
+| 项 | 实测 | 说明 |
+|---|---|---|
+| 增益图载体 | `tmap` 派生项的 `dimg` 指向 **增益图 grid**，该 grid 由 **4 块 `hvc1`** 拼成 | 既不是 `auxC` 辅助图，也不是单张图 |
+| 主图 | grid 拼 12 块或 30 块 `hvc1` | 用块数即可与增益图（4 块）区分 |
+| `tmap` item 载荷 | 62 B，是**嵌套 meta box**（`746d6170`="tmap" + meta，自带 iloc） | **不是** ISO 21496-1 参数；此前「5+56 字节参数块」的猜测是错的 |
+| 华为私有参数 | `mime` 项 380 KB（`application/vnd.huawei/...`）+ `it35` 项 237 B | **没有公开解析器** |
+| 系统转码结果 | 相册/系统转出的 JPEG 是 **ISO Ultra HDR**，增益图 535~620 KB、`GainMapMax=2.1484` | 绕行成立，且可作为自研结果的对照基线 |
+
+**取法（v0.1.14）**：不自己解 HEVC，而是把「grid + 4 块 tile + `hvcC`/`ispe` 等属性」重封成
+一个最小 HEIF，交给系统 `ImageDecoder`（它本来就会拼 grid）。tile 码流原样搬运，
+所以不需要 NDK、不需要 libheif，APK 仍是 0 个 `.so`。
+
+```bash
+# 桌面侧：看结构 / 抽 item / 重封（纯标准库，无需 pillow）
+PYTHONPATH=src/python python -m uhdr.heif_grid <file.heic>
+PYTHONPATH=src/python python -m uhdr.heif_grid <file.heic> --dump 42:grid.bin --hex 47
+PYTHONPATH=src/python python -m uhdr.heif_grid <file.heic> --rewrap 42 -o gainmap.heic
+```
+
+App 侧同一套逻辑在 `HeifGridRewriter.kt`；选图后日志 `[2c/5]` 段会打印 grid 结构与重封解码结果。
+**仍未做**：把解出的增益图接进烘焙链路；以及解析华为 `mime` / `it35` 参数项（未知格式）。
+
 ## 5. 相关文件
 
 | 文件 | 作用 |
 |---|---|
 | `src/android/.../HeifInspector.kt` | App 内 ISOBMFF 结构探针（只解析） |
-| `src/android/.../MainActivity.kt` | 读到 ISOBMFF 时打印结构并停止，提示复制日志反馈 |
+| `src/android/.../HeifGridRewriter.kt` | grid 增益图重封成最小 HEIF（v0.1.14，纯 Kotlin） |
+| `src/android/.../MainActivity.kt` | 读到 ISOBMFF 时打印结构 + grid 摘要 + 重封试解 |
+| `src/python/uhdr/heif_grid.py` | 同一套解析/重封的桌面实现 + CLI（`--dump` / `--rewrap`） |
+| `tests/test_heif_grid.py` | 合成 HEIC 的回归测试（16 项） |
 | `scripts/analyze_image.py` | 桌面统一分析器（JPEG 走 uhdr / HEIC 走 pillow-heif） |

@@ -583,7 +583,8 @@ def _dimg_box(from_id: int, to_ids: list[int], wide: bool) -> bytes:
 
 def _iprp(props: list[tuple[str, bytes]], assoc: dict[int, list[tuple[int, bool]]],
           wide: bool) -> bytes:
-    ipco = box("ipco", b"".join(p for _t, p in props))
+    # props 里存的是「属性载荷」，必须重新套上 box 头；直接拼载荷会得到一堆无法解析的废字节
+    ipco = box("ipco", b"".join(box(t, p) for t, p in props))
     wide_idx = len(props) > 127
     entries = []
     for iid, lst in assoc.items():

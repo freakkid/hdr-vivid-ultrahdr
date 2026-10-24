@@ -1,6 +1,6 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-24（**真机全链路已跑通**：v0.1.13 + 真实华为样本，产物经桌面独立校验 20/20，见 `docs/02` §2.9）
+> 最后更新：2026-10-24（v0.1.14：HEIC 增益图实为 **4 块 grid**，新增 `HeifGridRewriter` 重封最小 HEIF 交给系统解 —— 桌面同逻辑 `uhdr.heif_grid`，回归 48 项。真机全链路已在 v0.1.13 跑通，见 `docs/02` §2.9）
 > 读这一篇就能接手，不需要回看聊天记录。
 
 ---
@@ -369,7 +369,7 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 > | 形态 | 判据 | 处理方式 |
 > |---|---|---|
 > | **增益图型**（大多数手机默认）| 有 `aux`，URN 是 ISO 21496-1 / 厂商 hdrgainmap | SDR 主图 + 增益图，按 hdrgm 公式重建 —— 我们已实现（JPEG 容器）|
-> | **tmap 派生型** | `compat` 含 `tmap`（ISO 21496-1 的 HEIF 品牌），增益图是 `iref` 的 `dimg` 指向的独立 item，**auxC 里看不到** | 按 iref 取出增益图 item 单独解码（0.1.12 起能读出关系，**提取未实现**）|
+> | **tmap 派生型** | `compat` 含 `tmap`（ISO 21496-1 的 HEIF 品牌），增益图是 `iref` 的 `dimg` 指向的独立 item（**实测是 4 块 `hvc1` 拼的 grid**），**auxC 里看不到** | 按 `dimg` 取出那 4 块并拼图（v0.1.14 用「重封最小 HEIF 交给系统解码」实现，待真机确认）|
 > | **直接编码型** | 无 aux，但 `nclx transfer` = 16(PQ) / 18(HLG)，常配 BT.2020 + 10bit | 主图本身就是 HDR，需要 **PQ/HLG 逆变换 → 线性 → 色调映射**，属 §3.4 路线 A |
 >
 > **2026-10-24 实测教训**：用户那张华为 HEIC 是 `aux=0`，旧解析器直接判「无增益图，普通 SDR」；
@@ -379,7 +379,8 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 > 桌面 `scripts/analyze_image.py` 已能自动区分这两者并给出结论（v0.1.7 后）。
 > 所以「有没有增益图」不是 HDR 的唯一判据 —— 这点此前一直没说清。
 
-当前只解析 JPEG。若源图是真 HEIC（`ftyp` 开头），不会崩，但会走到「已识别是 HEIC，
+当前只解析 JPEG（HEIC 分支只做结构诊断 + grid 重封试解，**还没接进烘焙链路**）。
+若源图是真 HEIC（`ftyp` 开头），不会崩，但会走到「已识别是 HEIC，
 本版不支持解码，结构已列在下方日志」。
 
 **已有部分**（v0.1.6 起，别重复造）：
@@ -390,6 +391,12 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 - `scripts/analyze_image.py` —— 桌面侧，走 pillow-heif，`--extract` 能把 aux 图解成 PNG
 - 系统转码兜底 —— `openTypedAssetFileDescriptor(uri, "image/jpeg", null)`，
   **实测在卓易通容器内不可用**，且即使可用增益图也会丢
+- `HeifGridRewriter.kt`（v0.1.14）—— 解析 `grid` / `dimg` / `iloc` / `ipma`，把指定 grid
+  （含 4 块增益图）**重封成最小 HEIF** 交给系统 `ImageDecoder`。tile 码流与 `hvcC` 原样搬运，
+  **不碰 HEVC、不引 NDK、APK 仍是 0 个 `.so`**。选图日志 `[2c/5]` 段会打印 grid 结构并试解一次
+- `src/python/uhdr/heif_grid.py` —— 同一套逻辑的桌面参考实现 + 诊断 CLI
+  （`--json` / `--dump ID:PATH` / `--hex ID` / `--rewrap GRID -o out.heic`），
+  回归见 `tests/test_heif_grid.py`（16 项，合成文件；**真机华为文件仍待验证**）
 
 **2026-10-24 拿到 7 张真 HEIC 原件（微信「文件」通道，`FileStorage/File/2026-10/`），结构完全一致**：
 
@@ -403,6 +410,11 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 
 结论：自研提取的真实成本是「解 4 块 HEVC grid + 按 grid 拼装」，不是「取一个 aux item」。
 
+**v0.1.14 把「拼 grid」这步做成了重封**：`HeifGridRewriter` 把 grid 与其 4 块 tile 重封成
+最小 HEIF，**HEVC 解码交还给系统**（`ImageDecoder` 本来就会拼 grid），因此不需要 NDK、
+也不需要 libheif。剩下的未知只有两个：① 系统/容器是否真的能解重封图（真机待验）；
+② 华为私有参数项（`mime` 380 KB / `it35` 237 B）怎么解析 —— **没有任何开源实现**。
+
 **绕行方案已验证可行**：系统/微信把 HEIC 转成 JPEG 时，会写成 **ISO Ultra HDR**（增益图 535~620 KB、
 `GainMapMax=2.1484`、原始值 `[0, 2.148445, 0, 2.169925, 1.0, 0, 0]`），App 走 JPEG 分支即可正常处理。
 所以 §3.5 的优先级应下调：能绕行，不必急着自研 grid 提取。
@@ -411,7 +423,7 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 
 | 路线 | 成本 | 风险 |
 |---|---|---|
-| 自研 ISOBMFF：把增益图 item 抽出来重封成最小 HEIF 再交给 `ImageDecoder` | 中（纯 Kotlin，无需 NDK）| 要自己处理 `iloc`/`hvcC` 依赖关系 |
+| 自研 ISOBMFF：把增益图 item 抽出来重封成最小 HEIF 再交给 `ImageDecoder` | 中（纯 Kotlin，无需 NDK）| **v0.1.14 已实现 grid 版**（`HeifGridRewriter` + 桌面 `uhdr.heif_grid`），待真机验证 |
 | 引入 `libheif`（≥1.18 才有 ISO 21496-1 TMAP 支持）| 高（NDK + 子模块 + ABI）| APK 体积与构建复杂度显著上升 |
 | 让用户在相册「另存为 JPG」 | 零 | **增益图永久丢失，HDR 全废**，等于放弃功能 |
 
@@ -704,7 +716,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地现存：`out/HdrVividUltraHdr-0.1.13-debug.apk`（2.15 MB）。
+本地现存：`out/HdrVividUltraHdr-0.1.14-debug.apk`（2.27 MB）、`out/HdrVividUltraHdr-0.1.13-debug.apk`（2.15 MB）。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 
@@ -735,6 +747,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 | 0.1.11 | 12 | 见 `git log` | 新增**全屏查看日志**：容器写出的文件宿主机一律读不到（MediaStore / SAF 均实测失败），**屏幕是唯一跨容器通道** | 「查看全部日志（全屏）」按钮，点开为 460dp 可滚动对话框，`HEIC 摘要` 在顶部 |
 | **0.1.12** | **13** | 见 `git log` | **补 HEIC 增益图的第二形态**：原来只查 `auxC`，现在同时解析 `iref`（dimg/auxl/thmb）与 `tmap` 派生项。实测那张华为 HEIC 是 `aux=0` + `compat=tmap` + 有 `iref`，旧逻辑误判为「无增益图」 | 摘要多两行：`aux=N（无 aux 型辅助图）`、`compat-tmap=… tmap项=… iref=…` 及关系列表 |
 | **0.1.13** | **14** | 见 `git log` | 修 `iref` 的 ID 宽度取值（应由 iref 自身 FullBox version 决定，而非每个 reference box 首字节——后者是 from_id 高字节）；摘要补 `tmap id` 列表 | 摘要多一行 `tmap id: #NN(大小)`，可据此对上 `dimg` 关系定位主图/增益图 |
+| **0.1.14** | **15** | 见 `git log` | **HEIC grid 重封**：`HeifGridRewriter` 解析 grid/dimg/iloc/ipma，把 4 块增益图重封成最小 HEIF 交给系统 `ImageDecoder`（不碰 HEVC、不加 .so）。选图时日志多一段 `[2c/5]` | 界面不变；HEIC 日志新增 `grid #NN 2x2 输出 … ← 增益图候选`、`重封图解码：…` |
 
 ### 11.3 一眼判定手机上装的是哪版
 
