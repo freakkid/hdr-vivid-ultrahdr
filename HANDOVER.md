@@ -593,6 +593,7 @@ adb logcat -d -b crash | grep finn                                          # �
 | `out/real_sample.ultrahdr.jpg` | 由你的样张导出的 HDR 文件（1.5 MB） | 若要移除：`git rm out/real_sample.ultrahdr.jpg && ./scripts/ship.sh "chore: 移除含隐私的样例产物"`（历史仍保留，彻底清除需 rewrite history） |
 | `out/app_screenshot.png` | App 界面截图（曾一度截到通知栏） | 同上 |
 | `out/phone_screen.jpeg` | 手机整屏截图（含状态栏、通知、电量、蓝牙状态） | 含设备状态信息。不需要时同理 `git rm` |
+| `out/screen_*.jpeg`（2026-10-24 曾误提交两张，已删） | `hdc snapshot_display` 的整屏截图 | 已在 `.gitignore` 加 `out/screen_*`；**排查时优先用 `snapshot_display` + `file recv` 到 `%TEMP%`，不要落到 `out/`** |
 | `out/visual/` | 由真实照片生成的三档烘焙图 | **已被 gitignore，不会入库**，但换机器需重新生成（§3.2）|
 
 另外 `C:/Users/ugnam/AppData/Local/Temp/hdrprobe/bluetooth_recv.heic` 是**唯一一份真实样张原件**，

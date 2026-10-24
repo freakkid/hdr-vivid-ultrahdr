@@ -38,3 +38,7 @@ out/t_*.jpg
 
 # 目视对比材料（含真实照片内容，同 baked 产物处理）
 out/visual/
+
+# 手机截屏（含状态栏、通知、电量等设备状态，不入库）
+out/screen_*.jpeg
+out/screen_*.jpg
