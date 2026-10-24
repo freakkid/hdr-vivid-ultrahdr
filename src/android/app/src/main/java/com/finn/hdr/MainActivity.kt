@@ -69,6 +69,12 @@ class MainActivity : ComponentActivity() {
      */
     private val previewGen = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /**
+     * 导出代次：换图时自增，作废在跑的导出线程。
+     * 少了它就会出现「上一张的导出结果把按钮点亮、bakedFile 却指向旧图」。
+     */
+    private val exportGen = java.util.concurrent.atomic.AtomicInteger(0)
+
     private val previewEdge = 720     // 预览长边，够看清效果又不吃内存
     private val exportEdge = 2048     // 导出长边（与桌面 Python 默认一致）
 
@@ -392,10 +398,14 @@ class MainActivity : ComponentActivity() {
         bakedFile = null
         hdrFile = null
         lastRawBytes = null
+        parsed = null                  // 必须清：否则新图还没解析完时点导出会把上一张再导一遍
+        pvBase = null
+        pvGain = null
         previewGen.incrementAndGet()   // 作废上一张图残留的预览任务
+        exportGen.incrementAndGet()    // 作废在跑的导出线程（否则旧结果会点亮按钮、内容却是上一张）
         previewHandler.removeCallbacks(previewTask)
-        exportButton.isEnabled = false
         runOnUiThread {
+            exportButton.isEnabled = false
             shareBaked.isEnabled = false
             shareHdr.isEnabled = false
             saveBaked.isEnabled = false
@@ -410,6 +420,12 @@ class MainActivity : ComponentActivity() {
                 val (rawBytes, formatNote) = readImageBytes(uri)
                 appendLog(formatNote)
                 appendLog("长度：${rawBytes.size} B")
+
+                // 字节一读到就让「导出原图」可用，早于任何解析：解析失败/无增益图时
+                // 这条出口最有用，不能等到后面某个分支才点亮（此前只有 HEIC 与有增益图
+                // 的 JPEG 会点亮，其余情况按钮永远是灰的）
+                lastRawBytes = rawBytes
+                runOnUiThread { exportRawButton.isEnabled = true }
 
                 appendLog("[2/5] 解析容器")
                 val fmtNow = sniffFormat(rawBytes).first
@@ -573,6 +589,7 @@ class MainActivity : ComponentActivity() {
         // 且一次导出内读三次，打印的参数可能和实际执行的不一致
         val profile = curProfile()
         val strength = curStrength()
+        val gen = exportGen.get()      // 换图会自增，旧线程据此放弃回写 UI
         previewGen.incrementAndGet()   // 导出期间不再接受预览结果
         exportButton.isEnabled = false
         infoView.text = "导出中…"
@@ -632,6 +649,7 @@ class MainActivity : ComponentActivity() {
                 appendLog("[4/4] 完成")
                 pruneExports(dir)
                 runOnUiThread {
+                    if (gen != exportGen.get()) return@runOnUiThread   // 已换图，丢弃旧结果
                     exportButton.isEnabled = true
                     shareBaked.isEnabled = bakedFile?.exists() == true
                     shareHdr.isEnabled = hdrFile?.exists() == true
@@ -641,7 +659,14 @@ class MainActivity : ComponentActivity() {
             } catch (t: Throwable) {
                 say("导出失败：${t.javaClass.simpleName}")
                 appendLog(describe(t))
-                runOnUiThread { exportButton.isEnabled = true }
+                runOnUiThread {
+                    if (gen != exportGen.get()) return@runOnUiThread
+                    exportButton.isEnabled = true
+                    // 烘焙图可能已经落盘（后续阶段才失败），不能因为异常就把出口全关掉
+                    shareBaked.isEnabled = bakedFile?.exists() == true
+                    saveBaked.isEnabled = bakedFile?.exists() == true
+                    shareHdr.isEnabled = hdrFile?.exists() == true
+                }
             }
         }.start()
     }

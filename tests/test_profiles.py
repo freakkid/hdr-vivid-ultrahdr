@@ -72,10 +72,11 @@ class TestFaithfulNotBrighter(unittest.TestCase):
 
 
 class TestStrengthTakesEffect(unittest.TestCase):
-    """封顶必须随 strength 缩放，否则滑杆看起来「不生效」。
+    """strength 必须真的改变输出，否则滑杆看起来「不生效」。
 
-    曾经的实现把提亮上限固定成 1.12：strength=0.30 时 boost 已经 1.47x，
-    于是 0.30 与 1.00 的预览几乎一样，真机反馈就是「烘焙强度参数不生效」。
+    历史：v0.1.17 之前 strength 只乘增益，而增益差异被色调映射压平 →
+    0.30 与 1.00 的预览几乎一样。v0.1.18 改成缩放「HDR 相对 SDR 的增量」
+    （target = sdr + (blended - sdr) * strength），本测试守住这条语义。
     """
 
     @classmethod

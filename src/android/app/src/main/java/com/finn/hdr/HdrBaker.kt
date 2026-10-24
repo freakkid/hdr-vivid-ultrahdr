@@ -194,7 +194,12 @@ object HdrBaker {
             out = FloatArray(n * 3)
             i = 0
             while (i < n) {
-                val ml = 0.2126f * mapped[i * 3] + 0.7152f * mapped[i * 3 + 1] + 0.0722f * mapped[i * 3 + 2]
+                // 与 Python 对齐：bake.py 先把 LTM 输出 clip 到 [0,1] 再算亮度，
+                // 这里若不裁剪，饱和高光处两端会算出不同亮度（Kotlin 偏亮）。
+                val mr = clamp01(mapped[i * 3])
+                val mg = clamp01(mapped[i * 3 + 1])
+                val mb = clamp01(mapped[i * 3 + 2])
+                val ml = 0.2126f * mr + 0.7152f * mg + 0.0722f * mb
                 val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
                 val blended = sdrLum[i] * (1f - wgt) + ml * wgt
                 // 增量按 strength 缩放：0 → 完全等同源 SDR；1 → 完整 HDR 效果
@@ -202,11 +207,11 @@ object HdrBaker {
                     sdrLum[i] + (blended - sdrLum[i]) * amount,
                     sdrLum[i] * liftCap,
                 )
-                if (ml > white) clipped++          // LTM 输出仍超白点：真正的过曝像素
+                // 裁切率统一在收尾循环里统计（此处再计一次会让 clippedRatio 翻倍）
                 val scale = if (ml > 1e-6f) target / ml else 0f
-                out[i * 3] = mapped[i * 3] * scale
-                out[i * 3 + 1] = mapped[i * 3 + 1] * scale
-                out[i * 3 + 2] = mapped[i * 3 + 2] * scale
+                out[i * 3] = mr * scale
+                out[i * 3 + 1] = mg * scale
+                out[i * 3 + 2] = mb * scale
                 i++
             }
         } else {

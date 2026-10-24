@@ -54,10 +54,9 @@ class BakeOptions:
     # 手机显示 HDR 时参考白仍对应 SDR 1.0，中间调观感与 SDR 一致，所以这里必须按亮度分流。
     blend_start: float = 0.35
     blend_end: float = 0.90
-    # 单个像素相对源 SDR 的最大提亮倍数，**以 strength=0.70 为定档点**。
-    # 实际生效值 = 1 + (max_lift-1) * strength/0.70：0.30→≈1.11、0.70→1.25、1.00→≈1.36。
-    # 必须随 strength 缩放，否则封顶会把滑杆压死（0.30 时 boost 已 1.47x，固定封顶后
-    # 0.3 与 1.0 输出几乎一致）。封顶仍是「发白」的解药：实测 192~223 被推 +8.5% 即可见。
+    # 单像素相对源 SDR 的最大提亮倍数（**安全垫，不随 strength 缩放**）。
+    # 强度由 strength 作用在「HDR 相对 SDR 的增量」上实现，见 bake() 里的 amount。
+    # 封顶仍是「发白」的解药：实测 192~223 被推 +8.5% 即可见。
     max_lift: float = 1.25
 
 
@@ -184,8 +183,11 @@ def bake(
         target = sdr_lum + (blended - sdr_lum) * amount
         target = np.minimum(target, sdr_lum * lift_cap)
         scale = np.where(mapped_lum > 1e-6, target / np.maximum(mapped_lum, 1e-6), 0.0)
-        out = np.clip(mapped_rgb * scale[..., None], 0.0, 1.0)
-        norm = (out * _LUMA).sum(axis=2) / white     # 仅用于统计裁切率
+        raw = mapped_rgb * scale[..., None]
+        out = np.clip(raw, 0.0, 1.0)
+        # 裁切率统计在**裁剪前**取值，与 Kotlin 的收尾循环同一口径；
+        # 用裁剪后的 out 算会恒为 0（out 已 ≤1），是死指标。
+        norm = (raw * _LUMA).sum(axis=2) / white
     else:
         norm = lum / white
         mapped = _soft_knee(norm, opt.knee)
