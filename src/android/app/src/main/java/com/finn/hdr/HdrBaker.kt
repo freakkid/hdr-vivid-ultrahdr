@@ -207,11 +207,15 @@ object HdrBaker {
                     sdrLum[i] + (blended - sdrLum[i]) * amount,
                     sdrLum[i] * liftCap,
                 )
-                // 裁切率统一在收尾循环里统计（此处再计一次会让 clippedRatio 翻倍）
                 val scale = if (ml > 1e-6f) target / ml else 0f
-                out[i * 3] = mr * scale
-                out[i * 3 + 1] = mg * scale
-                out[i * 3 + 2] = mb * scale
+                val rr = mr * scale
+                val gg = mg * scale
+                val bb = mb * scale
+                // 按单通道计裁切：亮度归一化后个别通道仍会 >1，用亮度判会恒为 0
+                if (rr > 1f || gg > 1f || bb > 1f) clipped++
+                out[i * 3] = rr
+                out[i * 3 + 1] = gg
+                out[i * 3 + 2] = bb
                 i++
             }
         } else {
@@ -220,7 +224,6 @@ object HdrBaker {
             while (i < n) {
                 val l = lum[i]
                 val norm = l / white
-                if (norm > 1f) clipped++
                 val mapped = softKnee(norm, opt.knee)
                 val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
                 val blended = sdrLum[i] * (1f - wgt) + mapped * wgt
@@ -229,9 +232,13 @@ object HdrBaker {
                     sdrLum[i] * liftCap,
                 )
                 val scale = if (l > 1e-6f) target / l else 0f
-                out[i * 3] = hdr[i * 3] * scale
-                out[i * 3 + 1] = hdr[i * 3 + 1] * scale
-                out[i * 3 + 2] = hdr[i * 3 + 2] * scale
+                val rr = hdr[i * 3] * scale
+                val gg = hdr[i * 3 + 1] * scale
+                val bb = hdr[i * 3 + 2] * scale
+                if (rr > 1f || gg > 1f || bb > 1f) clipped++
+                out[i * 3] = rr
+                out[i * 3 + 1] = gg
+                out[i * 3 + 2] = bb
                 i++
             }
         }
@@ -245,12 +252,7 @@ object HdrBaker {
             var g = clamp01(out[i * 3 + 1])
             var b = clamp01(out[i * 3 + 2])
 
-            // LTM 路径的裁切率按输出亮度统计；与 Python 一致：先 clip 再算亮度
-            // （LTM 归一化的是亮度而非单通道，个别通道仍可能超 1）
-            if (ltmParams != null) {
-                val l = 0.2126f * r + 0.7152f * g + 0.0722f * b
-                if (l / white > 1f) clipped++
-            }
+            // 裁切率已在上面按单通道统计（压缩前 >1 即算），此处不再重复计数
 
             // 转 sRGB（感知域）
             r = linToSrgb(r)

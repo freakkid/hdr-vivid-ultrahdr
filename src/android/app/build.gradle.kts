@@ -16,8 +16,8 @@ android {
         applicationId = "com.finn.hdr"
         minSdk = 26          // FileProvider / Bitmap API 足够；HDR"显示"能力由系统看图器决定
         targetSdk = 34
-        versionCode = 20
-        versionName = "0.1.19"
+        versionCode = 21
+        versionName = "0.1.20"
 
         if (withNative) {
             ndk {

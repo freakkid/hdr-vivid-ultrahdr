@@ -75,6 +75,13 @@ class MainActivity : ComponentActivity() {
      */
     private val exportGen = java.util.concurrent.atomic.AtomicInteger(0)
 
+    /**
+     * 加载代次：快速连续选图时作废前一次的解析/解码结果。
+     * 没有它，先发起的慢加载会在后一次清理之后回写 `parsed`/`pvBase`，造成
+     * 「预览是 B、导出却是 A」这类错配。
+     */
+    private val loadGen = java.util.concurrent.atomic.AtomicInteger(0)
+
     private val previewEdge = 720     // 预览长边，够看清效果又不吃内存
     private val exportEdge = 2048     // 导出长边（与桌面 Python 默认一致）
 
@@ -401,6 +408,7 @@ class MainActivity : ComponentActivity() {
         parsed = null                  // 必须清：否则新图还没解析完时点导出会把上一张再导一遍
         pvBase = null
         pvGain = null
+        val lgen = loadGen.incrementAndGet()   // 作废上一次还在跑的加载线程
         previewGen.incrementAndGet()   // 作废上一张图残留的预览任务
         exportGen.incrementAndGet()    // 作废在跑的导出线程（否则旧结果会点亮按钮、内容却是上一张）
         previewHandler.removeCallbacks(previewTask)
@@ -426,6 +434,7 @@ class MainActivity : ComponentActivity() {
                 // 的 JPEG 会点亮，其余情况按钮永远是灰的）
                 lastRawBytes = rawBytes
                 runOnUiThread { exportRawButton.isEnabled = true }
+                if (lgen != loadGen.get()) return@Thread   // 期间又选了别的图，本次结果作废
 
                 appendLog("[2/5] 解析容器")
                 val fmtNow = sniffFormat(rawBytes).first
@@ -590,11 +599,17 @@ class MainActivity : ComponentActivity() {
         val profile = curProfile()
         val strength = curStrength()
         val gen = exportGen.get()      // 换图会自增，旧线程据此放弃回写 UI
+        bakedFile = null               // 清掉上一轮产物：否则本次失败时按钮会亮在旧文件上
+        hdrFile = null
         previewGen.incrementAndGet()   // 导出期间不再接受预览结果
         exportButton.isEnabled = false
         infoView.text = "导出中…"
 
         Thread {
+            // 产物先落在局部变量里，只有 gen 校验通过才提交到字段 ——
+            // 否则旧线程会把上一张的文件「写回」新图的界面状态
+            var localBaked: File? = null
+            var localHdr: File? = null
             try {
                 appendLog("\n===== 导出全尺寸（长边 $exportEdge）=====")
                 val dir = File(cacheDir, "exports").apply { mkdirs() }
@@ -626,7 +641,7 @@ class MainActivity : ComponentActivity() {
                 val bakedJpeg = bos.toByteArray()
                 val bf = File(dir, "${baseName}_BAKED.jpg")
                 bf.writeBytes(bakedJpeg)
-                bakedFile = bf
+                localBaked = bf
                 appendLog("已写出 ${bf.name}（${bakedJpeg.size / 1024} KB, q=$quality）")
                 base.recycle(); gain.recycle(); baked.recycle()
 
@@ -640,7 +655,7 @@ class MainActivity : ComponentActivity() {
                 if (result.ok && result.jpeg != null) {
                     val hf = File(dir, "${baseName}_HDR.jpg")
                     hf.writeBytes(result.jpeg)
-                    hdrFile = hf
+                    localHdr = hf
                     appendLog("已写出 ${hf.name}（${result.jpeg.size / 1024} KB）")
                 } else {
                     appendLog("自检未通过 → 不标记为 HDR")
@@ -650,10 +665,12 @@ class MainActivity : ComponentActivity() {
                 pruneExports(dir)
                 runOnUiThread {
                     if (gen != exportGen.get()) return@runOnUiThread   // 已换图，丢弃旧结果
+                    bakedFile = localBaked
+                    hdrFile = localHdr
                     exportButton.isEnabled = true
-                    shareBaked.isEnabled = bakedFile?.exists() == true
-                    shareHdr.isEnabled = hdrFile?.exists() == true
-                    saveBaked.isEnabled = bakedFile?.exists() == true
+                    shareBaked.isEnabled = localBaked?.exists() == true
+                    shareHdr.isEnabled = localHdr?.exists() == true
+                    saveBaked.isEnabled = localBaked?.exists() == true
                     infoView.text = "导出完成：${bf.name}（${bakedJpeg.size / 1024} KB）。可保存到相册或用微信发送。"
                 }
             } catch (t: Throwable) {
@@ -661,11 +678,13 @@ class MainActivity : ComponentActivity() {
                 appendLog(describe(t))
                 runOnUiThread {
                     if (gen != exportGen.get()) return@runOnUiThread
+                    bakedFile = localBaked
+                    hdrFile = localHdr
                     exportButton.isEnabled = true
                     // 烘焙图可能已经落盘（后续阶段才失败），不能因为异常就把出口全关掉
-                    shareBaked.isEnabled = bakedFile?.exists() == true
-                    saveBaked.isEnabled = bakedFile?.exists() == true
-                    shareHdr.isEnabled = hdrFile?.exists() == true
+                    shareBaked.isEnabled = localBaked?.exists() == true
+                    saveBaked.isEnabled = localBaked?.exists() == true
+                    shareHdr.isEnabled = localHdr?.exists() == true
                 }
             }
         }.start()

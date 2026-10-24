@@ -68,7 +68,7 @@ class BakeStats:
     max_boost: float
     hdr_peak: float              # 合成后峰值亮度（线性，1.0 = SDR 白点）
     white_point: float           # 实际采用的白点
-    clipped_ratio: float         # 压缩后仍被裁切的像素占比
+    clipped_ratio: float         # 压缩前单通道 >1 的像素占比（亮度口径恒为 0，别用）
     strength: float
     profile: str = "off"
     ltm: dict = field(default_factory=dict)
@@ -185,9 +185,6 @@ def bake(
         scale = np.where(mapped_lum > 1e-6, target / np.maximum(mapped_lum, 1e-6), 0.0)
         raw = mapped_rgb * scale[..., None]
         out = np.clip(raw, 0.0, 1.0)
-        # 裁切率统计在**裁剪前**取值，与 Kotlin 的收尾循环同一口径；
-        # 用裁剪后的 out 算会恒为 0（out 已 ≤1），是死指标。
-        norm = (raw * _LUMA).sum(axis=2) / white
     else:
         norm = lum / white
         mapped = _soft_knee(norm, opt.knee)
@@ -196,7 +193,12 @@ def bake(
         target = sdr_lum + (blended - sdr_lum) * amount
         target = np.minimum(target, sdr_lum * lift_cap)
         scale = np.where(lum > 1e-6, target / np.maximum(lum, 1e-6), 0.0)[..., None]
-        out = np.clip(hdr * scale, 0.0, 1.0)
+        raw = hdr * scale
+        out = np.clip(raw, 0.0, 1.0)
+
+    # 裁切率：**按单通道**统计压缩前的 >1。用亮度判会恒为 0（亮度被归一化到 target ≤ 1），
+    # 但单通道确实会溢出（scale>1 时主导通道先超），与 Kotlin 的统计口径一致。
+    clip_mask = (raw > 1.0).any(axis=2)
 
     srgb = _linear_to_srgb(out)
 
@@ -222,7 +224,7 @@ def bake(
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=quality, subsampling=subsampling, optimize=True)
 
-    clipped = float((norm > 1.0).mean())
+    clipped = float(clip_mask.mean())
     stats = BakeStats(
         base_size=base.size,
         gainmap_size=gm_img.size,
