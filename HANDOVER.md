@@ -1,6 +1,6 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-24（v0.1.12：HEIC 增益图第二形态 —— 补 `iref`/`tmap` 解析，旧版只查 `auxC` 会把 tmap 派生型误判成「无增益图」）
+> 最后更新：2026-10-24（**真机全链路已跑通**：v0.1.13 + 真实华为样本，产物经桌面独立校验 20/20，见 `docs/02` §2.9）
 > 读这一篇就能接手，不需要回看聊天记录。
 
 ---
@@ -10,7 +10,7 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG；**并**同时产出一张「HDR 效果已烘焙进像素」的普通 JPEG（微信/任何设备可见） |
-| 到哪一步了 | 两条链路（Ultra HDR 容器、像素烘焙）**代码全部完成**，自动化验证全绿（回归 32 / 静态自检 45 / APK 构建通过）。**v0.1.8 已实机验证界面与 HEIC 主图解码**，v0.1.13（iref 修正 + tmap id）刚推到手机待重装 |
+| 到哪一步了 | **真机全链路已跑通**（v0.1.13，真实华为 HDR 样本：解析→烘焙→封装→自检→导出，产物经 Python 独立校验 **20/20**，见 `docs/02` §2.9）。剩下**微信多路径实测**与**目视确认** |
 | 下一步唯一要做的事 | 手机插线解锁 → 开 USB 调试 → `hdc file send` 推 APK → 卓易通安装 → 选图，看到界面五段日志与左右预览（§3.0） |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:\DevEco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。随 HarmonyOS Command Line Tools 安装，**不在仓库里**，换机器需重装（§1.3-C）|
@@ -145,8 +145,9 @@ APK 可构建（**v0.1.13 / versionCode 14**）。**已完成项不在此罗列*
 App 与 Python 烘焙输出 SSIM 0.95，见 docs/02 §2.8）验的是 `2bd975e` 的产物，
 那时 `versionCode = 1 / versionName = 0.1.0`。**
 
-也就是说：**0.1.2 起的全部改动（实时预览、HEIC 探针、保存相册、日志落盘、
-三轮审查修复），从未在任何设备（含模拟器）上执行过。** 这是当前最大风险的来源。
+2026-10-24 真机验证已覆盖「解析 → 解码 → 烘焙 → 封装 → 自检 → 导出」全链路
+（v0.1.13 + 真实华为 HDR 样本，产物经 Python 独立校验 20/20，见 `docs/02` §2.9）。
+**仍未覆盖**：显示效果（需第二台 Ultra HDR 设备）、多场景样张、微信不勾原图时的行为。
 
 Kotlin/Python 双实现数值对照（`tests/ltm_parity/run_parity.sh`）**只在 macOS 上验证通过**：
 脚本探测的是 POSIX 路径 `…/envs/default/bin/python`，Windows 的 venv 在 `Scripts/python.exe`，
@@ -194,7 +195,7 @@ SAF 按钮保留，权当「让用户能在容器内自己找到文件」，不�
 
 ## 3. 未完成（按优先级）
 
-### 3.0 【P0，唯一的阻塞项】把 v0.1.13 装到手机并跑一次
+### 3.0 【已完成 2026-10-24】v0.1.13 真机全链路验证
 
 代码侧没有已知阻塞。**APK 已构建好（`out/HdrVividUltraHdr-0.1.13-debug.apk`，2.15 MB）。**
 v0.1.8 已在真机上跑通（界面 9 按钮、HEIC 主图 `4320x5760` 解码成功）；
@@ -509,6 +510,7 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 | 只有 HDC，没有 ADB | `adb devices` 永远为空；设备管理器只有 `HDC Device` | 正常现象，两套协议。用 `hdc`（§1.3-C），`adb` 在这台机器上就是废物 |
 | **MTP 不是「没有」，是「只能读不能写」** | 早期文档写「WPD 为空」，那是查法错了：`Get-PnpDevice -Class WPD` 看不到，得用 `pnputil /enum-devices /connected` 才看到 `HUAWEI Mate 70`（驱动 `wpdmtp.inf`，已启动）| 读取方向可用（成功拉过文件）；**写入方向 `Shell.Application.CopyHere` 全部静默丢弃**，四种 flags/对象形式都试过。结论：传文件用 hdc，别用 MTP |
 | 容器内 App 对外不可见 | `bm dump -n com.finn.hdr` 查不到 | 卓易通是隔离沙箱（iSulad）。**hdc 不能安装、不能启动容器内的 App**，这两步必须人工 |
+| **`ACTION_SEND` 能跨容器**（2026-10-24 实测）| App 点「发送 Ultra HDR」→ 弹出微信并成功发出 | **这是取产物的唯一好用通道**（拿的是原文件，不是截图）。微信接收端存成 `WeChat Files/<wxid>/…/Image/*.dat`，单字节 XOR `0x7B` 即还原原图；`FileStorage/File/YYYY-MM/` 则是「文件」通道（`.heic` 等原样保留）|
 | 相册读不到 | `ls /storage/media/100/local/files/Docs/DCIM` 为空 | 鸿蒙相册在受保护媒体库。**拿不到用户照片原件**，只能靠 App 屏幕日志反馈 |
 | **容器内 MediaStore 写的文件宿主机读不到** | App 显示「日志已导出：下载/HDRLog/x.txt（2238 字）」，宿主机 `Docs/Download` 下根本没有 `HDRLog` | 安卓兼容层（anco）的媒体库是**私有**的，真实落点是 `/data/virt_service/rgm_hmos/anco_hmos_data/media/0/`：`ls` 与 `hdc file recv` 全部 **Permission denied**，`hdc smode` 报 `Cannot set root run mode in undebuggable version`（零售版不可提权）。容器内「下载」≠ 宿主机 `Docs/Download`（后者是 sharefs，只负责把文件送进去）。**0.1.9 起导出改走 SAF（用户选位置）**。⚠️ **SAF 也打不通**：v0.1.10 实测「导出日志（选位置）」保存后，宿主机 `Download`/`Documents`/`Desktop` 全空、`find /storage/media/100/local/files` 无结果——**容器的 DocumentsUI 也是容器组件，目标 URI 仍指向容器私有文件系统**。两个可选位置都验证过：`下载内容` = DownloadsProvider（容器）、`CLS-AL30` = `content://com.android.externalstorage.documents/root/primary`（**容器的内部存储**，不是宿主机 `Docs`）。存到 `CLS-AL30/Download/HDRLog/` 后，宿主机 `Docs/Download` 下依然没有该目录，`hdc file recv` 报 `no such file or directory`。**跨容器取数据的唯一可用通道是「屏幕」**：v0.1.11 起 App 提供「查看全部日志（全屏）」，宿主机 `hdc snapshot_display` 截图即可读全部内容；其次是**剪贴板**（App 复制 → 宿主机应用粘贴），两条都已验证 |
 | APK 可写的落地目录 | —— | `/storage/media/100/local/files/Docs/Download/`（hdc `file send` 目标就是这里）|
@@ -759,12 +761,14 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 
 ## 12. 一句话总结
 
-**代码写完了，验证卡在「把 v0.1.11 装上跑一次」。** 解析端从 v0.1.8 起不再静默退化
-（增益参数取自增益图自身 XMP、畸形段降级、`0xFF` 填充不再误判、CUVA 语义显式上报）。
+**真机全链路已跑通。** 2026-10-24 用真实华为 HDR 样本（ISO Ultra HDR JPEG，增益图 620 KB）在
+HUAWEI CLS-AL30 + 卓易通上完整跑通：解析 → 采样解码 → 烘焙 → 几何同步 → 封装 → 自检 → 导出，
+产物 841 KB，经微信传回电脑后用 Python 独立校验 **20/20 全 PASS**（详见 `docs/02` §2.9）。
+`GainMapMax=2.148445` 与源完全一致，证明 v0.1.8 的「读增益图自身 XMP」修复在真机生效。
 
-取日志这件事已经查到底：容器写出的文件，**MediaStore 与 SAF 两条路宿主机都读不到**
-（`/data/virt_service/rgm_hmos` 无权限、`hdc smode` 零售版禁用、SAF 的两个目标位置
-「下载内容」和「CLS-AL30」都是容器内部存储）。唯一可靠的跨容器通道是**屏幕**——
-v0.1.11 的「查看全部日志（全屏）」+ `hdc snapshot_display` 截图。
+剩下的不是「能不能跑」，而是「效果对不对」：微信各路径是否保留元数据、接收端能否显示 HDR、
+多场景样张下的观感。先做 §3.3（微信实测），再谈别的。
 
-v0.1.8 已在真机跑通界面与 HEIC 主图解码，**v0.1.9 之后还没装过**。先做 §3.0，再谈别的。
+**一条环境铁律**（花了半晚查清，别再试）：容器写出的文件，宿主机 `hdc` **一律读不到**——
+MediaStore 落在 `/data/virt_service/rgm_hmos`（无权限），SAF 的两个目标位置也都是容器内部存储，
+`hdc smode` 在零售版被禁用。取日志/取产物只能靠**屏幕截图**或**App 内分享到宿主机微信**。
