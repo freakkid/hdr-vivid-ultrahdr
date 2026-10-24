@@ -726,8 +726,15 @@ sRGB → 线性 → 按 hdrgm 还原 HDR 亮度
 ### 10.2b 验收（改任何烘焙参数后必须先跑）
 
 ```bash
-python tests/acceptance/accept.py --real <真实样本.jpg>
+# 一条命令跑完：自动从手机拉样例 → 静态自检 → 两端一致性 → 回归 → 观感验收
+python scripts/verify_bake.py
+
+# 顺便构建并把 APK 推到手机（之后只剩「点安装」是人工的）
+python scripts/verify_bake.py --apk
 ```
+
+`scripts/check_parity.py` 是其中防「一边改了另一边没跟上」的那一层：对账 `blend/maxLift/
+strength 增量表达式/faithful 参数`，任一不一致即失败。它不需要编译器，也不需要设备。
 
 6 个可计算指标，阈值与依据见 `tests/acceptance/README.md`。当前 **5/5 PASS**：
 中位差 +0.0、纯白比源多 0.00%、暗部 1.02×、SSIM 0.945~0.992。

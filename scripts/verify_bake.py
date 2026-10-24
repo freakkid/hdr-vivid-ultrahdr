@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
+import shutil
 import subprocess
 import sys
 
@@ -106,6 +108,51 @@ def run_step(title: str, cmd: list[str]) -> bool:
     return ok
 
 
+def build_and_push() -> bool:
+    """构建 APK 并推到手机。推到手机后只剩「在卓易通里点安装」这一步是人工的。"""
+    gradle = os.path.join(ROOT, "src", "android", "gradlew.bat" if os.name == "nt" else "gradlew")
+    app_gradle = os.path.join(ROOT, "src", "android", "app", "build.gradle.kts")
+    m = re.search(r'versionName\s*=\s*"([\d.]+)"', open(app_gradle, encoding="utf-8").read())
+    version = m.group(1) if m else "0.0.0"
+    env = _env()
+    env.setdefault("JAVA_HOME", r"C:/Users/ugnam/.workbuddy/binaries/jdk/17")
+    env.setdefault("ANDROID_HOME", r"C:/Users/ugnam/Android/Sdk")
+
+    print("\n" + "=" * 72)
+    print(f"== 构建 APK v{version}")
+    print("=" * 72)
+    r = subprocess.run([gradle, "assembleDebug", "--no-daemon"],
+                       cwd=os.path.join(ROOT, "src", "android"), env=env)
+    if r.returncode != 0:
+        print("-- 构建失败")
+        return False
+
+    apk_src = os.path.join(ROOT, "src", "android", "app", "build", "outputs", "apk", "debug", "app-debug.apk")
+    apk_dst = os.path.join(ROOT, "out", f"HdrVividUltraHdr-{version}-debug.apk")
+    shutil.copyfile(apk_src, apk_dst)
+    print(f"-- 产物: {apk_dst}（{os.path.getsize(apk_dst) / 1048576:.2f} MB）")
+
+    hdc = find_hdc()
+    if not hdc:
+        print("-- 没有 hdc，跳过推送（APK 已在 out/）")
+        return True
+
+    listing = subprocess.run([hdc, "shell", f"ls {REMOTE_DIR}"], capture_output=True,
+                             text=True, encoding="utf-8", timeout=30)
+    for name in (listing.stdout or "").splitlines():
+        name = name.strip()
+        if name.startswith("HdrVividUltraHdr-") and name.endswith(".apk") and name != f"HdrVividUltraHdr-{version}.apk":
+            subprocess.run([hdc, "shell", f"rm -rf {REMOTE_DIR}/{name}"], capture_output=True, timeout=30)
+    target = f"{REMOTE_DIR}/HdrVividUltraHdr-{version}.apk"
+    push = subprocess.run([hdc, "file", "send", apk_dst, target], capture_output=True,
+                          text=True, encoding="utf-8", timeout=180)
+    ok = push.returncode == 0
+    print(f"-- 推送: {'OK' if ok else 'FAILED'}  {target}")
+    if ok:
+        print("   手机上只剩「打开文件管理 → 点这个 APK → 安装」一步")
+    return ok
+
+
 def run_acceptance(samples: list[str], strength: float) -> bool:
     print("\n" + "=" * 72)
     print("== 观感验收（6 个客观指标）")
@@ -129,6 +176,8 @@ def main() -> int:
                     help="直接用这些样例（不拉手机）")
     ap.add_argument("--no-pull", action="store_true", help="不访问手机，只用本地已有样例")
     ap.add_argument("--strength", type=float, default=0.40, help="仅提示用，验收固定 0.40")
+    ap.add_argument("--apk", action="store_true",
+                    help="额外构建 APK 并推到手机（之后只剩「点安装」是人工的）")
     args = ap.parse_args()
 
     print(f"仓库: {ROOT}")
@@ -164,10 +213,15 @@ def main() -> int:
     results.append(("静态自检",
                     run_step("静态自检 check_android_project.py",
                              [sys.executable, os.path.join(ROOT, "scripts", "check_android_project.py")])))
+    results.append(("两端一致性",
+                    run_step("两端一致性 check_parity.py",
+                             [sys.executable, os.path.join(ROOT, "scripts", "check_parity.py")])))
     results.append(("回归测试",
                     run_step("回归测试 unittest discover",
                              [sys.executable, "-m", "unittest", "discover", "-s", os.path.join(ROOT, "tests")])))
     results.append(("观感验收", run_acceptance(samples, args.strength)))
+    if args.apk:
+        results.append(("构建推送", build_and_push()))
 
     print("\n" + "=" * 72)
     for name, ok in results:
