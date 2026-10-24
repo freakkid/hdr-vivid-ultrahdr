@@ -138,7 +138,7 @@ HDC="C:/DevEco/command-line-tools/sdk/default/openharmony/toolchains/hdc.exe"
 ## 2. 基线状态
 
 Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 32 项、静态自检 45 项、
-APK 可构建（**v0.1.13 / versionCode 14**）。**已完成项不在此罗列**——证据在 `git log` 与
+APK 可构建（**v0.1.16 / versionCode 17**）。**已完成项不在此罗列**——证据在 `git log` 与
 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
 尚未做的只有 §3。
 
@@ -230,7 +230,7 @@ cd "$(git rev-parse --show-toplevel)/out"
 然后在手机上：**卓易通 → 右上角「+」→「本地安装包」→ 选该 APK**。
 （hdc 装不了：`bm dump -n com.finn.hdr` 查不到容器内的 App，它是隔离沙箱，装/点必须人工。）
 
-装完判定标准，按顺序看（**下面文案取自 v0.1.10 源码，逐字对得上才算装对**）：
+装完判定标准，按顺序看（**下面文案取自 v0.1.16 源码，逐字对得上才算装对**）：
 
 | 检查 | 期望 |
 |---|---|
