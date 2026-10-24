@@ -1,6 +1,6 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-24 深夜（v0.1.18：**烘焙强度真正生效** + `faithful` 保真档；HEIC grid 重封已实现；一键自检 `scripts/verify_bake.py`）
+> 最后更新：2026-10-25（v0.1.22：**修「烘焙图发灰」= 丢 Display P3 ICC**；提交/打包前强制本地自检；**测试策略调研见 `docs/07-testing-strategy.md`**）
 > 读这一篇就能接手，不需要回看聊天记录。**先看 §0 和 §10.2，这两处是这一晚的结论。**
 
 ---
@@ -10,8 +10,8 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG；**并**同时产出一张「HDR 效果已烘焙进像素」的普通 JPEG（微信/任何设备可见） |
-| 到哪一步了 | **真机全链路已跑通**（`docs/02` §2.9：真实华为样本，产物经 Python 独立校验 **20/20**）。烘焙算法 v3 + 4 档 profile，本地一键自检 `scripts/verify_bake.py`（回归 53 项 + 验收含真机样例 10/10）。剩：**微信三路径实测** + **观感最终确认** |
-| 下一步唯一要做的事 | ① 改完任何烘焙参数先跑 `python scripts/verify_bake.py`（会自动从手机拉样例、跑回归与验收，**不需要人看图**）；② 让用户装 v0.1.18 后拖一次强度滑杆，确认「亮度 x.xx」数值变化、观感可接受；③ 仍嫌亮就切 `faithful` 档（§10.2），不要再来回调全局参数 |
+| 到哪一步了 | **真机全链路已跑通**（`docs/02` §2.9：真实华为样本，Python 独立校验 **20/20**）。烘焙算法 v3 + 4 档 profile；本机可真跑 Kotlin（`tests/android_parity/`）；一键自检 `scripts/verify_bake.py` 7 步全绿。**当前手机上是 0.1.22（未安装）**，观感待用户最后一次确认 |
+| 下一步唯一要做的事 | ① **改任何东西先跑 `python scripts/verify_bake.py`**（拉样例→静态→两端常量→回归 53→验收 10/10→Kotlin 像素 9/9→Kotlin grid 7/7，缺 kotlinc/样例会标 SKIP）；② 装 0.1.22 确认**发灰已修**（饱和度从 60.2 回到 66.3，正确值 69.0）；③ 仍未解决的是「层次少」——见 `docs/07-testing-strategy.md` §4 的量化方法，先补对比度类指标再调参 |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:\DevEco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。随 HarmonyOS Command Line Tools 安装，**不在仓库里**，换机器需重装（§1.3-C）|
 | 下一个真问题 | **观感对齐缺少参照物**。目前以「源 SDR 主图的中位亮度」为基准（依据：手机显示 HDR 时参考白仍对应 SDR 1.0）。若这样仍不一致，唯一可靠办法是拿**手机截屏**当目标对齐 —— 用户暂不愿意，所以这是唯一没有客观解的部分 |
@@ -824,6 +824,7 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
 | **0.1.18** | **19** | 见 `git log` | **修「烘焙强度不生效」**：strength 改为缩放「HDR 相对 SDR 的增量」（此前只乘增益，被色调映射压平，0.30 与 1.00 输出几乎相同）；`maxLift` 退回安全垫（1.25）；「导出原图」对 JPEG 也可用 | 预览状态行多一段 `亮度 x.xx`；导出日志多一行「输出亮度 … 上限 …」 |
 | **0.1.19** | **20** | 见 `git log` | 三路审查修复：①「导出原图」在无增益图/解析失败分支也可用（字节一到就启用）；② 导出加**代次令牌**，换图后旧线程不再点亮按钮/回写旧图；③ 换图清 `parsed/pvBase/pvGain`；④ 导出部分失败仍点亮已落盘的出口；⑤ Kotlin 裁切率重复计数修掉；⑥ Kotlin LTM 输入与 Python 一样先 clip 到 [0,1] | 界面无变化；导出失败时「发送/保存」不再一律变灰 |
 | **0.1.20** | **21** | 见 `git log` | 复审补漏：① 产物先落局部变量、gen 校验通过才提交字段（旧线程不会再把旧图写回）；② 导出开始即清空上一轮 `bakedFile/hdrFile`；③ 新增 `loadGen`，快速连续选图时作废前一次解析结果；④ 裁切率改为**按单通道**统计（亮度口径恒 0，是死指标） | 无界面变化；`裁切 x%` 数字开始有意义 |
+| **0.1.21** | **22** | 见 `git log` | 「导出原图」改存**原件**字节（此前系统转码成功时会导出转码后的 JPEG）；按钮文案改为「导出（长边 2048，超出才缩）」「导出原图（选位置，任何格式都可用）」 | 界面文案变化 |
 | **0.1.22** | **23** | 见 `git log` | **修「烘焙图比原图灰」**：源图 ICC 是 Display P3，此前丢掉 ICC 后系统按 sRGB 解释，实测平均饱和度 60.2 而正确值 69.0（-8.8 点）。现在两端都先转 sRGB 再烘焙（Python `to_srgb()` / Kotlin `inPreferredColorSpace=sRGB`） | 无界面变化；烘焙图色彩恢复正常 |
 
 ### 11.3 一眼判定手机上装的是哪版
@@ -864,8 +865,11 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
 
 **还没做（按优先级）**
 
-1. **用户确认 v0.1.16 观感** —— 最后一次反馈「0.3 还是太亮」，此版已把中高光从 +8.5% 压到 +4.6%；
-   仍嫌亮就降 `maxLift`（1.12 → 1.05）。
+1. **用户确认 0.1.22 观感** —— 最新反馈是「发灰、层次少」。其中**发灰已定位并修好**（v0.1.22：
+   源图 ICC 是 Display P3，此前丢掉后系统按 sRGB 解释，平均饱和度 60.2 而正确值 69.0）。
+   **「层次少」还没修**：烘焙链路抬了暗部（p5 25.7→26.7）、压平高光（软膝收敛 0.96），
+   下一步要先把「局部对比/高光层次」做成可计算指标，再动参数（见 `docs/07-testing-strategy.md`）。
+   **别再直接调 `maxLift`/`strength`** —— 那两个已有回归守着，乱调只会回到"过曝/太亮"。
 2. **微信三路径实测**（§3.3）：不勾原图时会不会剥掉增益图。
 3. **接收端能否显示 HDR**：需要第二台支持 Ultra HDR 的设备。
 
@@ -874,6 +878,30 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
 容器写出的文件，宿主机 `hdc` **一律读不到**：MediaStore 落在 `/data/virt_service/rgm_hmos`（无权限），
 SAF 的两个目标位置（「下载内容」「CLS-AL30」）也都是容器内部存储，`hdc smode` 在零售版被禁用。
 取日志靠**全屏日志 + 截图**（v0.1.11 起），取产物靠**App 内分享到微信**（`.dat` 用 XOR `0x7B` 还原）。
+
+---
+
+## 14. 新会话启动（直接复制这段给 AI）
+
+> 你在 `c:/Users/ugnam/Workspace/code/hdr-vivid-ultrahdr`（私有仓库 `git@github.com:freakkid/hdr-vivid-ultrahdr.git`，分支 `main`）。
+> 先读 `HANDOVER.md`（§0 接手 / §10.2 烘焙算法 / §12 总结 / §13 发版），再读 `docs/07-testing-strategy.md`（测试策略）。
+>
+> 硬性约定：
+> 1. **改任何代码先跑 `python scripts/verify_bake.py`**（7 步全绿才算过）；打包用 `--apk`，
+>    自检没过它会自动跳过构建。`scripts/ship.sh` 提交前也会跑同一套，失败即 `exit 5`。
+> 2. **不要为了跑通而放宽阈值**；要改阈值必须在 `docs/07-testing-strategy.md` 里说明理由。
+> 3. Kotlin 侧可以在本机真跑：`tests/android_parity/` 用 kotlinc + 两个桩执行真实的
+>    `HdrBaker.kt` / `LocalToneMapping.kt` / `HeifGridRewriter.kt`。缺 kotlinc 时脚本会 SKIP（不算通过）。
+> 4. 本机：`bash` 是 WSL 存根（不可用），用 `C:/Program Files/Git/bin/bash.exe`；
+>    JDK 17 在 `C:/Users/ugnam/.workbuddy/binaries/jdk/17`，kotlinc 在 `~/.workbuddy/binaries/kotlinc/kotlinc/bin/kotlinc.bat`。
+> 5. 真机只有一台 HarmonyOS NEXT（CLS-AL30），`hdc` 在 `C:/DevEco/.../toolchains/hdc.exe`；
+>    **装机这一步只能人工**，不要把时间浪费在自动化安装上。
+>
+> 当前待办（按优先级）：
+> - P0：装 0.1.22 确认「发灰」已修；
+> - P0：把「层次少」量化（局部对比/高光分位距），补进 `tests/acceptance/accept.py` 并加下限；
+> - P1：`docs/07-testing-strategy.md` §2 的七个假绿点；
+> - P2：JVM 化 `HeifInspector`/`MetadataValidator`/`UltraHdrPackager`/`HdrSourceParser`。
 
 **2026-10-24（v0.1.15）烘焙算法 v2 —— 用验收数据逼出来的修正**：
 
