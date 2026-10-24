@@ -1,6 +1,6 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-23（v0.1.8：修掉增益参数退化、畸形段崩溃、0xFF 填充误判、XMP 段误取、语义静默成功五项；待装机验证）
+> 最后更新：2026-10-24（v0.1.9：导出改走 SAF——容器内 MediaStore 写的文件宿主机 `hdc` 读不到；包已推到手机，待重装验证落点）
 > 读这一篇就能接手，不需要回看聊天记录。
 
 ---
@@ -10,7 +10,7 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG；**并**同时产出一张「HDR 效果已烘焙进像素」的普通 JPEG（微信/任何设备可见） |
-| 到哪一步了 | 两条链路（Ultra HDR 容器、像素烘焙）**代码全部完成**，自动化验证全绿（回归 32 / 静态自检 45 / APK 构建通过）。**卡在最后一步：v0.1.8 已构建，但没装到手机过** |
+| 到哪一步了 | 两条链路（Ultra HDR 容器、像素烘焙）**代码全部完成**，自动化验证全绿（回归 32 / 静态自检 45 / APK 构建通过）。**v0.1.8 已实机验证界面与 HEIC 主图解码**，v0.1.9（导出改 SAF）刚推到手机待重装 |
 | 下一步唯一要做的事 | 手机插线解锁 → 开 USB 调试 → `hdc file send` 推 APK → 卓易通安装 → 选图，看到界面五段日志与左右预览（§3.0） |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:/Users/ugnam/hdc_official/hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。这是**机器级工具，不在仓库里**，换机器需重新获取（§1.3-C、`docs/03` §3.8）|
@@ -133,7 +133,7 @@ HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 ## 2. 基线状态
 
 Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 32 项、静态自检 45 项、
-APK 可构建（**v0.1.8 / versionCode 9**）。**已完成项不在此罗列**——证据在 `git log` 与
+APK 可构建（**v0.1.9 / versionCode 10**）。**已完成项不在此罗列**——证据在 `git log` 与
 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
 尚未做的只有 §3。
 
@@ -174,14 +174,20 @@ Python 侧 `int.from_bytes` 传 `'<'` 导致 EXIF Make 永远缺失、`--anchor`
 
 回归从 28 项增至 **32 项**（新增：0xFF 填充、ISO 截断降级、EXIF 在前的 XMP 判定、语义未验证上报）。
 
+**2026-10-24（v0.1.9）装机实测暴露一个环境级问题**：App 报「日志已导出」但宿主机取不到文件。
+排查结论是容器存储隔离（见 §5.2b），`hdc` 侧三条路全封死：
+`shell` 无权限 → `file recv` 也无权限 → `hdc smode` 零售版禁用。
+导出通道因此改为 SAF `ACTION_CREATE_DOCUMENT`（由系统文件选择器提供目标位置）。
+**这条改动只有编译验证，落点是否真在宿主机可见区还没确认**。
+
 
 ---
 
 ## 3. 未完成（按优先级）
 
-### 3.0 【P0，唯一的阻塞项】把 v0.1.8 装到手机并跑一次
+### 3.0 【P0，唯一的阻塞项】把 v0.1.9 装到手机并跑一次
 
-代码侧没有已知阻塞。**APK 已构建好（`out/HdrVividUltraHdr-0.1.8-debug.apk`，2.15 MB），
+代码侧没有已知阻塞。**APK 已构建好（`out/HdrVividUltraHdr-0.1.9-debug.apk`，2.15 MB），
 但从未在用户手机上运行过 v0.1.2 之后的版本**
 （用户手机上装的确认为旧版，但**具体是哪一版还没有截屏确认**——用 §11.3 的表去判，
 不要相信「只有一个按钮」这类描述：仓库里不存在"无日志框"的构建）。
@@ -193,12 +199,12 @@ HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 "$HDC" list targets -v
 
 # 2) 先删旧包。注意通配符千万别写 0.1.*——它会把马上要推的 0.1.8 一起匹配掉
-"$HDC" shell "rm -f /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.[0-7]*.apk"
+"$HDC" shell "rm -f /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.[0-8]*.apk"
 
 # 3) 再推新包（用绝对锚点，不依赖当前目录）
 cd "$(git rev-parse --show-toplevel)/out"
-"$HDC" file send HdrVividUltraHdr-0.1.8-debug.apk \
-  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.8.apk
+"$HDC" file send HdrVividUltraHdr-0.1.9-debug.apk \
+  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.9.apk
 
 # 4) 必须看到一行 2.2 MB 的 0.1.8.apk，否则推失败
 "$HDC" shell "ls -l /storage/media/100/local/files/Docs/Download/*.apk"
@@ -215,7 +221,7 @@ cd "$(git rev-parse --show-toplevel)/out"
 
 | 检查 | 期望 |
 |---|---|
-| 按钮共 9 个，**分两处** | **顶部两个**：「选择 HDR 照片」「用文件管理器选择（相册不可用点这个）」；**滑杆下方七个**：「导出全尺寸（2048 长边）」「发送烘焙图（微信可见 HDR 效果）」「发送 Ultra HDR（需设备支持）」「保存烘焙图到相册」「导出原图（HEIC 无增益图时用）」「复制日志（短）」「导出日志到下载」|
+| 按钮共 9 个，**分两处** | **顶部两个**：「选择 HDR 照片」「用文件管理器选择（相册不可用点这个）」；**滑杆下方七个**：「导出全尺寸（2048 长边）」「发送烘焙图（微信可见 HDR 效果）」「发送 Ultra HDR（需设备支持）」「保存烘焙图到相册」「导出原图（选保存位置，HEIC 用这个）」「复制日志（短）」「导出日志（选保存位置）」|
 | 中间控件（自上而下）| 左右两个图片位 → 一行状态文字 → **无标签的下拉框**（首项「本地观看（local：局部色调映射）」，然后「微信分享（wechat：克制映射+重压缩余量）」「仅全局映射（off：旧行为，A/B 对照）」）→ 「烘焙强度：0.70（1.0 = 完全按元数据恢复 HDR）」→ 滑杆 |
 | 首行日志 | `===== 载入 content://<authority> =====`（只到 authority、不含路径；前面还有一个空行）。注意：**不是** `URI：`，早期文档写错过 |
 | 格式行 | `格式=JPEG  头部=FF D8 FF E1 ...`；非 JPEG 时是 `格式=ISOBMFF(heic)` 等 |
@@ -471,6 +477,7 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 | **MTP 不是「没有」，是「只能读不能写」** | 早期文档写「WPD 为空」，那是查法错了：`Get-PnpDevice -Class WPD` 看不到，得用 `pnputil /enum-devices /connected` 才看到 `HUAWEI Mate 70`（驱动 `wpdmtp.inf`，已启动）| 读取方向可用（成功拉过文件）；**写入方向 `Shell.Application.CopyHere` 全部静默丢弃**，四种 flags/对象形式都试过。结论：传文件用 hdc，别用 MTP |
 | 容器内 App 对外不可见 | `bm dump -n com.finn.hdr` 查不到 | 卓易通是隔离沙箱（iSulad）。**hdc 不能安装、不能启动容器内的 App**，这两步必须人工 |
 | 相册读不到 | `ls /storage/media/100/local/files/Docs/DCIM` 为空 | 鸿蒙相册在受保护媒体库。**拿不到用户照片原件**，只能靠 App 屏幕日志反馈 |
+| **容器内 MediaStore 写的文件宿主机读不到** | App 显示「日志已导出：下载/HDRLog/x.txt（2238 字）」，宿主机 `Docs/Download` 下根本没有 `HDRLog` | 安卓兼容层（anco）的媒体库是**私有**的，真实落点是 `/data/virt_service/rgm_hmos/anco_hmos_data/media/0/`：`ls` 与 `hdc file recv` 全部 **Permission denied**，`hdc smode` 报 `Cannot set root run mode in undebuggable version`（零售版不可提权）。容器内「下载」≠ 宿主机 `Docs/Download`（后者是 sharefs，只负责把文件送进去）。**0.1.9 起导出改走 SAF（用户选位置）** |
 | APK 可写的落地目录 | —— | `/storage/media/100/local/files/Docs/Download/`（hdc `file send` 目标就是这里）|
 | 微信接收改名 | 文件名被加 `.1`，点击无法安装 | 文件管理 → 重命名，去掉 `.1` 恢复 `.apk`（华为官方说明）|
 | 容器内选图受限 | 系统 Photo Picker 可能不存在，`PickVisualMedia` 直接报错 | App 已内置三条通道自动退化（PickVisualMedia → OpenDocument → GetContent）+ 独立按钮。见 §3.0 |
@@ -540,15 +547,15 @@ bash ../../scripts/fetch-libultrahdr.sh                 # 需要 native 时
 # 真机 —— 鸿蒙（当前设备，用 hdc）
 HDC="C:/Users/ugnam/hdc_official/hdc.exe"
 cd "$ROOT" && "$HDC" list targets -v        # [Empty] = 没连上
-cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.8-debug.apk \
-  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.8.apk
+cd "$ROOT/out" && "$HDC" file send HdrVividUltraHdr-0.1.9-debug.apk \
+  /storage/media/100/local/files/Docs/Download/HdrVividUltraHdr-0.1.9.apk
 "$HDC" shell "ls -l /storage/media/100/local/files/Docs/Download/*.apk"   # 必须出现 2.2 MB 的 0.1.8；只有旧包=推失败
 "$HDC" shell "snapshot_display -f /data/local/tmp/s.jpeg"   # 截屏
 cd "$ROOT/out" && "$HDC" file recv /data/local/tmp/s.jpeg "screen_$(date +%H%M%S).jpeg"
   # 别覆盖 phone_screen.jpeg——它已入库且被 §8 列为隐私文件
 
 # 真机 —— 安卓（旧 Mate 30 / 模拟器，用 adb）
-cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.8-debug.apk
+cd "$ROOT" && adb install -r out/HdrVividUltraHdr-0.1.9-debug.apk
 F="cache/exports/IMG_xxxx_HDR.jpg"       # 换成实际文件名，别照抄 <file> 占位符
 adb exec-out run-as com.finn.hdr cat "$F" > pulled.jpg \
   && test -s pulled.jpg || echo "拉取失败或文件不存在"   # 重定向会掩盖失败，必须 test -s
@@ -661,7 +668,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地现存：`out/HdrVividUltraHdr-0.1.8-debug.apk`（约 2.2 MB）。
+本地现存：`out/HdrVividUltraHdr-0.1.9-debug.apk`（约 2.2 MB）。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 
@@ -686,7 +693,8 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 | 0.1.5 | 6 | `5e5eb96` | 三路审查修复：线程崩溃 / 往返丢增益参数 / EXIF 方向 / 采样解码防 OOM / 预览防抖 / 解析溢出 | 外观同 0.1.4，行为更稳 |
 | 0.1.6 | 7 | `59bfb27` | **HEIC 主图解码** + `iloc` 长度诊断 + 「导出原图」 | 「导出原图（HEIC 无增益图时用）」按钮 |
 | 0.1.7 | 8 | 见 `git log` | 诊断压成 4~8 行摘要 + 日志落盘导出（解决「复制不全」）| 「复制日志（短）」「导出日志到下载」两个按钮 |
-| **0.1.8** | **9** | 见 `git log` | 修复：增益参数退化（改读增益图自身 XMP）、畸形 ISO 段崩溃、`0xFF` 填充误判、XMP/MPF 段按签名匹配、CUVA 语义未验证不再静默 | 界面同 0.1.7；日志新增「hdrgm 参数取自增益图自身 XMP」/「⚠ 语义未验证」 |
+| 0.1.8 | 9 | 见 `git log` | 修复：增益参数退化（改读增益图自身 XMP）、畸形 ISO 段崩溃、`0xFF` 填充误判、XMP/MPF 段按签名匹配、CUVA 语义未验证不再静默 | 界面同 0.1.7；日志新增「hdrgm 参数取自增益图自身 XMP」/「⚠ 语义未验证」 |
+| **0.1.9** | **10** | 见 `git log` | **导出改走 SAF**：原 MediaStore 写的文件落在容器私有存储，宿主机 `hdc` 读不到 | 两个按钮文案变了：「导出原图（选保存位置，HEIC 用这个）」「导出日志（选保存位置）」 |
 
 ### 11.3 一眼判定手机上装的是哪版
 
@@ -694,6 +702,7 @@ sRGB → 线性 → 按 hdrgm 公式乘增益 → 白点归一化 → 高光软�
 
 | 看到这个 | 版本 |
 |---|---|
+| 「导出日志（选保存位置）」按钮 | **0.1.9** |
 | 日志出现「hdrgm 参数取自增益图自身 XMP」或「⚠ 增益图与 probe 均未提供」 | **0.1.8** |
 | 「导出日志到下载」按钮 | **0.1.7** |
 | 「导出原图（HEIC 无增益图时用）」按钮 | ≥ 0.1.6 |

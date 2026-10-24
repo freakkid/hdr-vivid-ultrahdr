@@ -107,6 +107,62 @@ class MainActivity : ComponentActivity() {
             if (uri != null) loadSource(uri) else say("已取消选择")
         }
 
+    /**
+     * 用 SAF（ACTION_CREATE_DOCUMENT）导出，保存位置由用户/系统 DocumentsUI 指定。
+     *
+     * 为什么弃用 MediaStore.Downloads：安卓兼容层（卓易通 / anco）里 MediaStore 的后端是
+     * **容器私有**的 media 存储，宿主机 `hdc` 完全读不到（`/data/virt_service/rgm_hmos`
+     * 连 shell 用户都没有读权限，零售版也无法 `hdc smode` 提权）。
+     * SAF 的目标 URI 由系统文件选择器提供，能落到宿主机可见的目录。
+     */
+    private val saveLogDoc =
+        registerForActivityResult(ActivityResultContracts.CreateDocument("text/plain")) { uri ->
+            if (uri == null) {
+                say("已取消保存")
+                return@registerForActivityResult
+            }
+            val txt = logView.text.toString()
+            Thread {
+                try {
+                    contentResolver.openOutputStream(uri)?.use {
+                        it.write(txt.toByteArray(Charsets.UTF_8))
+                        it.flush()
+                    } ?: error("openOutputStream 返回 null")
+                    say("日志已保存（${txt.length} 字）")
+                } catch (t: Throwable) {
+                    say("保存日志失败：${t.javaClass.simpleName}")
+                    appendLog("保存日志失败\n${describe(t)}")
+                }
+            }.start()
+        }
+
+    private val saveRawDoc =
+        registerForActivityResult(
+            ActivityResultContracts.CreateDocument("application/octet-stream")
+        ) { uri ->
+            if (uri == null) {
+                say("已取消保存")
+                return@registerForActivityResult
+            }
+            val bytes = lastRawBytes
+            if (bytes == null || bytes.isEmpty()) {
+                say("还没有读到原始文件，请先选图")
+                return@registerForActivityResult
+            }
+            Thread {
+                try {
+                    contentResolver.openOutputStream(uri)?.use {
+                        it.write(bytes)
+                        it.flush()
+                    } ?: error("openOutputStream 返回 null")
+                    say("原图已保存（${bytes.size} B）")
+                } catch (t: Throwable) {
+                    say("保存原图失败：${t.javaClass.simpleName}")
+                    appendLog("保存原图失败\n${describe(t)}")
+                }
+            }.start()
+        }
+
     /** step: 0=系统相册 1=文件选择器 2=GetContent */
     private fun openPicker(step: Int = 0) {
         val label = when (step) {
@@ -236,11 +292,25 @@ class MainActivity : ComponentActivity() {
             setOnClickListener { saveToGallery(bakedFile) }
         }
 
-        // HEIC 解不了时的唯一出路：把原件导到相册，用户自己用微信传出去
+        // HEIC 解不了时的唯一出路：把原件另存到用户指定的位置（容器内 MediaStore 宿主机读不到）
         exportRawButton = Button(this).apply {
-            text = "导出原图（HEIC 无增益图时用）"
+            text = "导出原图（选保存位置，HEIC 用这个）"
             isEnabled = false
-            setOnClickListener { exportRawFile() }
+            setOnClickListener {
+                val bytes = lastRawBytes
+                if (bytes == null || bytes.isEmpty()) {
+                    infoView.text = "还没有读到原始文件，请先选图"
+                    return@setOnClickListener
+                }
+                val fmt = sniffFormat(bytes).first
+                val ext = when {
+                    fmt.startsWith("ISOBMFF") -> "heic"
+                    fmt == "JPEG" -> "jpg"
+                    fmt == "PNG" -> "png"
+                    else -> "bin"
+                }
+                saveRawDoc.launch("HDR_RAW_${System.currentTimeMillis()}.$ext")
+            }
         }
 
         // 剪贴板只适合短内容：粘贴端（微信/输入法）对超长文本会静默截断，
@@ -259,9 +329,9 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        val exportLogButton = Button(this).apply {
-            text = "导出日志到下载"
-            setOnClickListener { exportLogFile() }
+        exportLogButton = Button(this).apply {
+            text = "导出日志（选保存位置）"
+            setOnClickListener { saveLogDoc.launch("hdr-log-${System.currentTimeMillis()}.txt") }
         }
 
         logView = TextView(this).apply {
@@ -632,122 +702,6 @@ class MainActivity : ComponentActivity() {
             val files = dir.listFiles()?.sortedByDescending { it.lastModified() } ?: return
             files.drop(keep).forEach { it.delete() }
         }
-    }
-
-    /**
-     * 把完整日志写到系统「下载」目录。
-     *
-     * 为什么需要它：剪贴板看着能用，但粘贴端（微信输入框、部分输入法）对超长文本
-     * 会**静默截断**，用户侧表现就是「复制不全」。文件不受这个限制，
-     * 而且能直接当文件发出去。
-     *
-     * 同时把文件落盘到 filesDir（`hdr-log.txt`）的副本也带上，便于事后追溯。
-     */
-    private fun exportLogFile() {
-        val txt = logView.text.toString()
-        if (txt.isBlank()) {
-            say("日志还是空的，请先选一张图")
-            return
-        }
-        if (android.os.Build.VERSION.SDK_INT < 29) {
-            say("系统低于 Android 10，暂不支持直接导出（可长按日志手动选择复制）")
-            return
-        }
-        val name = "hdr-log-${System.currentTimeMillis()}.txt"
-        say("导出日志中…")
-        Thread {
-            try {
-                val values = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
-                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "text/plain")
-                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
-                        android.os.Environment.DIRECTORY_DOWNLOADS + "/HDRLog")
-                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
-                }
-                val uri = contentResolver.insert(
-                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
-                ) ?: error("MediaStore.insert 返回 null（容器可能不支持 Downloads 集合）")
-                contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(txt.toByteArray(Charsets.UTF_8))
-                    out.flush()
-                } ?: error("openOutputStream 返回 null")
-                values.clear()
-                values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
-                contentResolver.update(uri, values, null, null)
-
-                runOnUiThread {
-                    infoView.text = "日志已导出：下载/HDRLog/$name（${txt.length} 字）"
-                }
-            } catch (t: Throwable) {
-                appendLog("导出日志失败：${describe(t)}")
-                runOnUiThread { infoView.text = "导出日志失败：${t.javaClass.simpleName}" }
-            }
-        }.start()
-    }
-
-    /**
-     * 把选中的**原始文件字节**导出到系统「下载」目录。
-     *
-     * 为什么需要它：鸿蒙相册在受保护媒体库，`hdc` 读不到；容器内 App 私有目录也拿不出来。
-     * App 是目前唯一能读到这些字节的地方，所以由 App 负责落盘，
-     * 用户再用微信/数据线传出来，桌面端就能用 pillow-heif 彻底分析。
-     *
-     * 走 `MediaStore.Downloads`（API 29+）：无需存储权限，且文件管理器可见。
-     */
-    private fun exportRawFile() {
-        val bytes = lastRawBytes
-        if (bytes == null || bytes.isEmpty()) {
-            say("还没有读到原始文件，请先选图")
-            return
-        }
-        if (android.os.Build.VERSION.SDK_INT < 29) {
-            say("系统低于 Android 10，暂不支持直接导出（请用「发送」按钮）")
-            return
-        }
-        val (fmt, _) = sniffFormat(bytes)
-        val ext = when {
-            fmt.startsWith("ISOBMFF") -> "heic"
-            fmt == "JPEG" -> "jpg"
-            fmt == "PNG" -> "png"
-            else -> "bin"
-        }
-        val mime = when (ext) {
-            "heic" -> "image/heic"
-            "jpg" -> "image/jpeg"
-            "png" -> "image/png"
-            else -> "application/octet-stream"
-        }
-        val name = "HDR_RAW_${System.currentTimeMillis()}.$ext"
-        say("导出原图中…")
-        Thread {
-            try {
-                val values = android.content.ContentValues().apply {
-                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
-                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
-                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH,
-                        android.os.Environment.DIRECTORY_DOWNLOADS + "/HDRRaw")
-                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
-                }
-                val uri = contentResolver.insert(
-                    android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values
-                ) ?: error("MediaStore.insert 返回 null（容器可能不支持 Downloads 集合）")
-                contentResolver.openOutputStream(uri)?.use { out ->
-                    out.write(bytes)
-                    out.flush()
-                } ?: error("openOutputStream 返回 null")
-                values.clear()
-                values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
-                contentResolver.update(uri, values, null, null)
-
-                appendLog("已导出原图：$name（${bytes.size} B, $mime）")
-                runOnUiThread {
-                    infoView.text = "原图已导出到 下载/HDRRaw/$name\n用微信发出来即可在桌面分析"
-                }
-            } catch (t: Throwable) {
-                appendLog("导出原图失败：${describe(t)}")
-                runOnUiThread { infoView.text = "导出原图失败：${t.javaClass.simpleName}" }
-            }
-        }.start()
     }
 
     /**
