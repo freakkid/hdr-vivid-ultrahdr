@@ -283,7 +283,7 @@ class MainActivity : ComponentActivity() {
         }
 
         exportButton = Button(this).apply {
-            text = "导出全尺寸（$exportEdge 长边）"
+            text = "导出（长边 $exportEdge，超出才缩）"
             isEnabled = false
             setOnClickListener { exportFull() }
         }
@@ -309,7 +309,7 @@ class MainActivity : ComponentActivity() {
 
         // HEIC 解不了时的唯一出路：把原件另存到用户指定的位置（容器内 MediaStore 宿主机读不到）
         exportRawButton = Button(this).apply {
-            text = "导出原图（选保存位置，HEIC 用这个）"
+            text = "导出原图（选位置，任何格式都可用）"
             isEnabled = false
             setOnClickListener {
                 val bytes = lastRawBytes
@@ -425,14 +425,16 @@ class MainActivity : ComponentActivity() {
         Thread {
             try {
                 appendLog("[1/5] 读取字节")
-                val (rawBytes, formatNote) = readImageBytes(uri)
-                appendLog(formatNote)
+                val read = readImageBytes(uri)
+                val rawBytes = read.effective
+                appendLog(read.note)
                 appendLog("长度：${rawBytes.size} B")
 
                 // 字节一读到就让「导出原图」可用，早于任何解析：解析失败/无增益图时
                 // 这条出口最有用，不能等到后面某个分支才点亮（此前只有 HEIC 与有增益图
-                // 的 JPEG 会点亮，其余情况按钮永远是灰的）
-                lastRawBytes = rawBytes
+                // 的 JPEG 会点亮，其余情况按钮永远是灰的）。
+                // 存的是**原件**，不是系统转码后的 JPEG —— 按钮写的是「导出原图」。
+                lastRawBytes = read.raw
                 runOnUiThread { exportRawButton.isEnabled = true }
                 if (lgen != loadGen.get()) return@Thread   // 期间又选了别的图，本次结果作废
 
@@ -458,8 +460,6 @@ class MainActivity : ComponentActivity() {
                                 if (gm.ok) "成功" else "失败（${gm.note.take(90)}）"
                         )
                     } ?: appendLog("没有可重封的 grid（可能不是 grid 结构）")
-
-                    lastRawBytes = rawBytes
 
                     appendLog("[2b/5] 尝试解码 HEIC 主图（增益图不会被提取）")
                     val dec = HeicDecoder.decodeMain(rawBytes, previewEdge)
@@ -514,7 +514,6 @@ class MainActivity : ComponentActivity() {
                 pvBase = base
                 pvGain = gain
                 appendLog("主图 ${base.width}x${base.height}  增益图 ${gain.width}x${gain.height}")
-                lastRawBytes = rawBytes      // 「导出原图」对 JPEG 同样可用（此前只在 HEIC 分支赋值）
                 runOnUiThread {
                     previewBefore.setImageBitmap(base)
                     exportButton.isEnabled = true
@@ -728,13 +727,20 @@ class MainActivity : ComponentActivity() {
         return name to hex
     }
 
+    /**
+     * 一次读取的两个版本：
+     *  - [raw]       文件原件字节（「导出原图」必须用它，否则 HEIC 会导出成转码后的 JPEG）
+     *  - [effective] 实际用于解析/解码的字节（系统转码成功时是 JPEG）
+     */
+    private data class ReadResult(val raw: ByteArray, val effective: ByteArray, val note: String)
+
     /** 读图并尽量取到 JPEG 字节；HEIC 等由系统转码。 */
-    private fun readImageBytes(uri: Uri): Pair<ByteArray, String> {
+    private fun readImageBytes(uri: Uri): ReadResult {
         val raw = contentResolver.openInputStream(uri)?.use { it.readBytes() }
             ?: error("无法读取文件（openInputStream 返回 null）")
         val (name, hex) = sniffFormat(raw)
         val head = "格式=$name  头部=$hex"
-        if (name == "JPEG") return raw to head
+        if (name == "JPEG") return ReadResult(raw, raw, head)
 
         // 非 JPEG：试一次让系统转成 JPEG。失败原因要分开报，否则无法判断是
         // 「provider 不支持该转换」还是「根本没有解码器」。
@@ -754,11 +760,15 @@ class MainActivity : ComponentActivity() {
         if (tc != null && tc.isNotEmpty()) {
             val tf = sniffFormat(tc).first
             if (tf == "JPEG") {
-                return tc to "$head\n已由系统转码为 JPEG：${tc.size} B（注意：增益图会在此步丢失）"
+                return ReadResult(
+                    raw, tc,
+                    "$head\n已由系统转码为 JPEG：${tc.size} B（注意：增益图会在此步丢失；" +
+                        "「导出原图」仍导出原件 ${raw.size} B）",
+                )
             }
             appendLog("系统转码返回的仍不是 JPEG（$tf），放弃该通道")
         }
-        return raw to "$head\n⚠ 不是 JPEG，系统转码也不可用。下面先读结构、再试本地解码。"
+        return ReadResult(raw, raw, "$head\n⚠ 不是 JPEG，系统转码也不可用。下面先读结构、再试本地解码。")
     }
 
     /** 按目标长边做采样解码，避免 5760×4320 直接解码耗尽内存。 */

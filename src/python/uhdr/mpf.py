@@ -86,28 +86,43 @@ def parse_mpf(payload: bytes, tiff_base_abs: int = 0) -> MpDirectory:
     if not payload.startswith(MPF_SIG):
         raise ValueError("不是 MPF APP2 段（缺少 MPF\\0 标识）")
     tiff = payload[len(MPF_SIG):]
-    if tiff[:4] != b"MM\x00\x2a":
-        raise ValueError("仅支持大端 MPF（MM）")
-    ifd_off = struct.unpack(">I", tiff[4:8])[0]
-    count = struct.unpack(">H", tiff[ifd_off:ifd_off + 2])[0]
+    if len(tiff) < 8:
+        raise ValueError(f"MPF TIFF 头截断（{len(tiff)} B）")
+    # TIFF 头自带字节序标记：MM=大端，II=小端。Google/Pixel 用小端，
+    # 华为等厂商常见大端，两端都必须支持，否则跨厂商文件一律判 MPF 损坏。
+    # 注意魔数 42 的字节序也随标记变化，不能当固定字节序列比较。
+    if tiff[:2] == b"MM":
+        e = ">"
+    elif tiff[:2] == b"II":
+        e = "<"
+    else:
+        raise ValueError(f"MPF 的 TIFF 字节序标记非法：{tiff[:2]!r}")
+    if struct.unpack(e + "H", tiff[2:4])[0] != 42:
+        raise ValueError(f"MPF 的 TIFF 魔数不是 42：{tiff[2:4]!r}")
+    ifd_off = struct.unpack(e + "I", tiff[4:8])[0]
+    if ifd_off + 2 > len(tiff):
+        raise ValueError(f"MPF 的 IFD0 偏移越界（{ifd_off} > {len(tiff)}）")
+    count = struct.unpack(e + "H", tiff[ifd_off:ifd_off + 2])[0]
 
     def read_values(tag: int, typ: int, cnt: int, raw_value: bytes) -> bytes:
         size_map = {1: 1, 2: 1, 3: 2, 4: 4, 7: 1}
         total = size_map.get(typ, 1) * cnt
         if total <= 4:
             return raw_value[:total]
-        off = struct.unpack(">I", raw_value)[0]
+        off = struct.unpack(e + "I", raw_value)[0]
         return tiff[off:off + total]
 
     entries: list[MpEntry] = []
     for i in range(count):
         base = ifd_off + 2 + i * 12
-        tag, typ, cnt = struct.unpack(">HHI", tiff[base:base + 8])
+        if base + 12 > len(tiff):
+            raise ValueError(f"MPF 的 IFD entry #{i} 越界（需要到 {base + 12}，实际 {len(tiff)}）")
+        tag, typ, cnt = struct.unpack(e + "HHI", tiff[base:base + 8])
         raw = tiff[base + 8:base + 12]
         if tag == TAG_MP_ENTRY:
             blob = read_values(tag, typ, cnt, raw)
             for k in range(len(blob) // 16):
-                a, s, o, d1, d2 = struct.unpack(">IIIHH", blob[k * 16:(k + 1) * 16])
+                a, s, o, d1, d2 = struct.unpack(e + "IIIHH", blob[k * 16:(k + 1) * 16])
                 entries.append(MpEntry(a, s, o, d1, d2))
     return MpDirectory(entries=entries, tiff_base_abs=tiff_base_abs)
 
