@@ -317,16 +317,7 @@ class MainActivity : ComponentActivity() {
         // 用户会以为「复制不全」。所以另给一个写文件的出口。
         val copyLogButton = Button(this).apply {
             text = "复制日志（短）"
-            setOnClickListener {
-                val txt = logView.text.toString()
-                val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                cm.setPrimaryClip(ClipData.newPlainText("hdr-log", txt))
-                infoView.text = if (txt.length > 3000) {
-                    "已复制 ${txt.length} 字，但**粘贴端可能截断**；建议改用下方「导出日志（选位置）」"
-                } else {
-                    "日志已复制（${txt.length} 字）"
-                }
-            }
+            setOnClickListener { copyLogToClipboard() }
         }
 
         exportLogButton = Button(this).apply {
@@ -337,8 +328,15 @@ class MainActivity : ComponentActivity() {
         // 0.1.8 及之前用 MediaStore 写到容器私有媒体库，宿主机看不到、文件管理器也难找，
         // 只能由写入方自己删。这是一次性清理入口。
         val purgeButton = Button(this).apply {
-            text = "清理导出残留（日志/原图/相册）"
+            text = "清理导出残留"
             setOnClickListener { purgeExports() }
+        }
+
+        // 反容器取文件的唯一通道：**屏幕**。宿主机 `hdc snapshot_display` 截得到这里显示的
+        // 任何文字，所以把日志全屏展开后，排查者截图即可，不必再折腾 MediaStore/SAF。
+        val viewLogButton = Button(this).apply {
+            text = "查看全部日志（全屏）"
+            setOnClickListener { showLogDialog() }
         }
 
         logView = TextView(this).apply {
@@ -369,7 +367,12 @@ class MainActivity : ComponentActivity() {
             addView(exportLogButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
         }
         root.addView(logButtonRow)
-        root.addView(purgeButton)
+        val actionRow = LinearLayout(this).apply {
+            orientation = LinearLayout.HORIZONTAL
+            addView(purgeButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+            addView(viewLogButton, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+        }
+        root.addView(actionRow)
         root.addView(
             scroll,
             LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f)
@@ -804,6 +807,60 @@ class MainActivity : ComponentActivity() {
             appendLog(msg)
             if (notes.isNotEmpty()) appendLog(notes.toString().trimEnd())
         }.start()
+    }
+
+    /**
+     * 全屏查看完整日志。
+     *
+     * 为什么需要它：容器里写出的文件宿主机一律读不到（MediaStore 与 SAF 两条路都实测过），
+     * 但 `hdc snapshot_display` 能截到屏幕上的任何内容——**屏幕是唯一可靠的跨容器通道**。
+     * 日志区本身只剩两行高，看不到 `HEIC 摘要` 的 aux / iloc，所以给一个全屏可滚动视图。
+     * 摘要排在日志最前面，打开即可见。
+     */
+    private fun showLogDialog() {
+        val txt = logView.text.toString()
+        if (txt.isBlank()) {
+            say("日志还是空的，请先选一张图")
+            return
+        }
+        val tv = TextView(this).apply {
+            text = txt
+            textSize = 11f
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+        }
+        val sv = ScrollView(this).apply { addView(tv) }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(sv, LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(460)
+            ))
+        }
+        android.app.AlertDialog.Builder(this)
+            .setTitle("完整日志（${txt.length} 字，可滚动）")
+            .setView(box)
+            .setPositiveButton("关闭", null)
+            .setNeutralButton("复制") { _, _ -> copyLogToClipboard() }
+            .show()
+    }
+
+    /** 复制日志到剪贴板（按钮与全屏对话框共用）。 */
+    private fun copyLogToClipboard() {
+        val txt = logView.text.toString()
+        if (txt.isEmpty()) {
+            say("日志还是空的，请先选一张图")
+            return
+        }
+        val cm = getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        cm.setPrimaryClip(ClipData.newPlainText("hdr-log", txt))
+        say(
+            if (txt.length > 3000) {
+                "已复制 ${txt.length} 字，但**粘贴端可能截断**；建议改用「查看全部日志」直接看屏幕"
+            } else {
+                "日志已复制（${txt.length} 字）"
+            }
+        )
     }
 
     private fun share(f: File?) {
