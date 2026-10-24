@@ -390,6 +390,22 @@ HDRCapacityMax 与导出链路已在模拟器验证通过（docs/02 §2.8）。
 - 系统转码兜底 —— `openTypedAssetFileDescriptor(uri, "image/jpeg", null)`，
   **实测在卓易通容器内不可用**，且即使可用增益图也会丢
 
+**2026-10-24 拿到 7 张真 HEIC 原件（微信「文件」通道，`FileStorage/File/2026-10/`），结构完全一致**：
+
+| 事实 | 值 |
+|---|---|
+| 增益图载体 | **不是 aux**，是 `tmap` 派生项。`iref` 里 `dimg <tmap> -> [<主图 grid>, <增益图 grid>]` |
+| 主图 | grid 拼接：12 块（大图）或 30 块（更高分辨率）`hvc1` |
+| 增益图 | grid 拼接：**固定 4 块 `hvc1`**，合计约 265 KB |
+| tmap item | 62 字节，内容是**嵌套的 meta box**（`746d6170`="tmap" + meta），**不是 hdrgm 参数**（此前猜"5+56 字节参数块"是错的） |
+| 华为私有元数据 | `mime` 项 380 KB（`application/vnd.huawei/...`）+ `it35` 项 237 字节 |
+
+结论：自研提取的真实成本是「解 4 块 HEVC grid + 按 grid 拼装」，不是「取一个 aux item」。
+
+**绕行方案已验证可行**：系统/微信把 HEIC 转成 JPEG 时，会写成 **ISO Ultra HDR**（增益图 535~620 KB、
+`GainMapMax=2.1484`、原始值 `[0, 2.148445, 0, 2.169925, 1.0, 0, 0]`），App 走 JPEG 分支即可正常处理。
+所以 §3.5 的优先级应下调：能绕行，不必急着自研 grid 提取。
+
 **要做的**：任选一条，成本从低到高
 
 | 路线 | 成本 | 风险 |
