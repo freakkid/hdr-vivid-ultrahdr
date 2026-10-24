@@ -423,18 +423,41 @@ def check_pushed() -> None:
         )
 
 
-def check_gh() -> None:
-    if not shutil.which("gh"):
+def find_gh() -> str | None:
+    """找 gh：PATH → Windows 常见安装位置。
+
+    winget 装完不会刷新已打开终端的 PATH，所以不能只靠 shutil.which。
+    """
+    found = shutil.which("gh")
+    if found:
+        return found
+    if os.name == "nt":
+        candidates = [
+            os.path.join(
+                os.environ.get("ProgramFiles", r"C:\Program Files"), "GitHub CLI", "gh.exe"
+            ),
+            os.path.join(os.environ.get("LOCALAPPDATA", ""), "GitHubCLI", "bin", "gh.exe"),
+        ]
+        for cand in candidates:
+            if os.path.exists(cand):
+                return cand
+    return None
+
+
+def check_gh() -> str:
+    gh = find_gh()
+    if not gh:
         fail(
             "没装 GitHub CLI（gh）",
             "macOS: brew install gh ｜ Windows: winget install --id GitHub.cli",
         )
-    p = run(["gh", "auth", "status"], check=False, capture=True)
+    p = run([gh, "auth", "status"], check=False, capture=True)
     if p.returncode != 0:
-        fail("gh 未登录", "跑一次 gh auth login")
+        fail("gh 未登录", "跑一次 gh auth login（或 gh auth login --web）")
+    return gh
 
 
-def create_release(tag: str, apk: str, notes_file: str) -> None:
+def create_release(gh: str, tag: str, apk: str, notes_file: str) -> None:
     target = f"hdr-vivid-ultrahdr-{tag.lstrip('v')}.apk"
     tmpdir = tempfile.mkdtemp(prefix="hdr-release-")
     staged = os.path.join(tmpdir, target)
@@ -443,7 +466,7 @@ def create_release(tag: str, apk: str, notes_file: str) -> None:
     print(f"[.] 上传 {target} …")
     p = run(
         [
-            "gh", "release", "create", tag, staged,
+            gh, "release", "create", tag, staged,
             "--title", tag,
             "--notes-file", notes_file,
             "--latest",
@@ -500,10 +523,11 @@ def main() -> int:
     print(f"[.] 待发布 {tag} (versionCode {code})")
 
     # 所有检查都在构建前做完 —— 构建要几分钟，不能让它在最后一步才失败
+    gh_bin = None
     if not args.dry_run:
         check_pushed()
         check_tag_available(tag)
-        check_gh()
+        gh_bin = check_gh()
 
     apk = None
     if args.dry_run and not args.build:
@@ -543,7 +567,7 @@ def main() -> int:
         print("\n[dry-run 结束，未发布]")
         return 0
 
-    create_release(tag, apk, notes_path)
+    create_release(gh_bin, tag, apk, notes_path)
     print_next_steps(version)
     return 0
 
