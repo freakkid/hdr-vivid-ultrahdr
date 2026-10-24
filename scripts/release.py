@@ -101,13 +101,14 @@ def _fix_stdio() -> None:
             pass
 
 
-def run(cmd, cwd=None, check=True, capture=False):
+def run(cmd, cwd=None, check=True, capture=False, env=None):
     p = subprocess.run(
         cmd,
         cwd=cwd,
         text=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
         stdout=subprocess.PIPE if capture else None,
         stderr=subprocess.STDOUT if capture else None,
     )
@@ -262,11 +263,69 @@ def install_footer(version: str, code: int, sha256: str | None) -> str:
 # ---------------------------------------------------------------- 构建与校验
 
 
+def find_jdk() -> str | None:
+    """找 JDK：JAVA_HOME → 本机 WorkBuddy 运行时 → 常见安装位 → PATH。
+
+    这台 Windows 的 JDK 装在 ~/.workbuddy/binaries/jdk/<ver> 下且不在 PATH 里，
+    不主动探测的话 gradlew 会直接报「JAVA_HOME is not set」。
+    """
+    exe = "java.exe" if os.name == "nt" else "java"
+
+    home = os.environ.get("JAVA_HOME", "")
+    if home and os.path.exists(os.path.join(home, "bin", exe)):
+        return home
+
+    candidates: list[str] = []
+    if os.name == "nt":
+        base = os.path.join(os.path.expanduser("~"), ".workbuddy", "binaries", "jdk")
+        if os.path.isdir(base):
+            # 目录名是版本号（17/21…），倒序取最新的
+            candidates += [
+                os.path.join(base, name)
+                for name in sorted(os.listdir(base), reverse=True)
+                if os.path.isdir(os.path.join(base, name))
+            ]
+        candidates += [
+            r"C:\Program Files\Android\Android Studio\jbr",
+            r"C:\Program Files\Eclipse Adoptium",
+            r"C:\Program Files\Java",
+        ]
+    else:
+        candidates += [
+            "/Library/Java/JavaVirtualMachines",
+            os.path.expanduser("~/Library/Java/JavaVirtualMachines"),
+            "/usr/lib/jvm",
+        ]
+
+    for cand in candidates:
+        if os.path.exists(os.path.join(cand, "bin", exe)):
+            return cand
+        # 版本子目录（Adoptium / jvm 目录结构）
+        if os.path.isdir(cand):
+            for name in sorted(os.listdir(cand), reverse=True):
+                sub = os.path.join(cand, name)
+                for inner in (sub, os.path.join(sub, "Contents", "Home")):
+                    if os.path.exists(os.path.join(inner, "bin", exe)):
+                        return inner
+
+    java = shutil.which("java")
+    return os.path.dirname(os.path.dirname(java)) if java else None
+
+
 def build(allow_unsigned: bool) -> str:
     task = "assembleDebug" if allow_unsigned else "assembleRelease"
     gradlew = ["cmd", "/c", "gradlew.bat"] if os.name == "nt" else ["./gradlew"]
+
+    env = dict(os.environ)
+    jdk = find_jdk()
+    if jdk:
+        env["JAVA_HOME"] = jdk
+        print(f"[.] JDK: {jdk}")
+    else:
+        print("[!] 没找到 JDK；构建若报 JAVA_HOME 错，先装 JDK 17 或设 JAVA_HOME")
+
     print(f"[.] 构建 {task} …")
-    p = run([*gradlew, task], cwd=ANDROID_DIR, check=False)
+    p = run([*gradlew, task], cwd=ANDROID_DIR, check=False, env=env)
     if p.returncode != 0:
         raise SystemExit(3)
     return task
@@ -297,10 +356,13 @@ def sha256_of(path: str) -> str:
 
 def print_cert(path: str) -> None:
     """打印签名证书指纹，用来确认是不是那把固定的 key。"""
-    if not shutil.which("keytool"):
+    jdk = find_jdk()
+    name = "keytool.exe" if os.name == "nt" else "keytool"
+    keytool = os.path.join(jdk, "bin", name) if jdk else (shutil.which("keytool") or "")
+    if not keytool or not os.path.exists(keytool):
         print("[!] 没找到 keytool，跳过签名指纹检查")
         return
-    p = run(["keytool", "-printcert", "-jarfile", path], check=False, capture=True)
+    p = run([keytool, "-printcert", "-jarfile", path], check=False, capture=True)
     if p.returncode != 0:
         print("[!] 读不出证书指纹（可能只有 v2 签名），跳过")
         return
@@ -478,7 +540,7 @@ def main() -> int:
     if args.dry_run:
         print(f"\n----- 发布说明预览（{notes_path}）-----\n")
         print(body)
-        print("\n[dry-run 结束，未构建未发布]")
+        print("\n[dry-run 结束，未发布]")
         return 0
 
     create_release(tag, apk, notes_path)
