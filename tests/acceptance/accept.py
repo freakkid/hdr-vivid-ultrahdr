@@ -66,7 +66,10 @@ DEFAULT_THRESHOLDS = {
     "clip_ratio_max": 0.01,       # 近纯白像素占比
     "shadow_lift_max": 1.10,      # 暗部（源 L<64）平均亮度提升倍数
     "ssim_min": 0.90,             # 与源 SDR 的结构相似度
-    "sat_ratio_max": 1.15,        # 平均饱和度增幅
+    "sat_ratio_max": 1.15,        # 平均饱和度增幅上限
+    # 饱和度**下限**：v0.1.21 就是因为这里没有下限，丢了 Display P3 的 ICC 后
+    # 饱和度掉到 0.873 却仍然全绿，发出去才发现「烘焙图比原图灰」。
+    "sat_ratio_min": 0.92,
 }
 
 
@@ -111,6 +114,9 @@ def judge(m: dict, th: dict) -> list[str]:
         bad.append("SSIM %.3f（下限 %.2f）" % (m["ssim"], th["ssim_min"]))
     if m["sat_ratio"] > th["sat_ratio_max"]:
         bad.append("饱和度 x%.2f（上限 %.2f）" % (m["sat_ratio"], th["sat_ratio_max"]))
+    if m["sat_ratio"] < th["sat_ratio_min"]:
+        bad.append("饱和度 x%.2f（下限 %.2f，疑似丢失 ICC/色彩管理）"
+                   % (m["sat_ratio"], th["sat_ratio_min"]))
     return bad
 
 
