@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -8,9 +10,32 @@ plugins {
 //   ./gradlew assembleDebug -PwithNative=true
 val withNative = (project.findProperty("withNative") as String?)?.toBoolean() ?: false
 
+// 发布签名：读 src/android/keystore.properties（该文件与 .jks 均已 gitignore）。
+// 缺失时**不创建** release 签名配置，产物保持 unsigned —— 与改动前行为一致，
+// 因此 assembleDebug / 现有流程完全不受影响。
+// 生成、备份与发版流程见 scripts/release.py 顶部说明。
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps = Properties().apply {
+    if (keystorePropsFile.exists()) keystorePropsFile.inputStream().use { load(it) }
+}
+
 android {
     namespace = "com.finn.hdr"
     compileSdk = 34
+
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            create("release") {
+                // storeFile 建议写绝对路径（keystore 放仓库外，避免误提交）
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
+            }
+        }
+    }
 
     defaultConfig {
         applicationId = "com.finn.hdr"
@@ -51,6 +76,9 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
+            if (keystorePropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
         }
     }
 }

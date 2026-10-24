@@ -108,6 +108,19 @@ def run_step(title: str, cmd: list[str]) -> bool:
     return ok
 
 
+def run_step_optional(title: str, cmd: list[str]) -> bool:
+    """跑一个步骤；退出码 2 视为「环境缺失，跳过」，不计为失败。"""
+    print("\n" + "=" * 72)
+    print(f"== {title}")
+    print("=" * 72)
+    r = subprocess.run(cmd, cwd=ROOT, env=_env())
+    if r.returncode == 2:
+        print(f"-- {title}: 跳过（缺环境）")
+        return True
+    print(f"-- {title}: {'OK' if r.returncode == 0 else 'FAILED'}")
+    return r.returncode == 0
+
+
 def run_android_parity(samples: list[str], strength: float) -> bool:
     """在本机执行真实的 Kotlin HdrBaker，与 Python 逐像素比对。
 
@@ -238,6 +251,10 @@ def main() -> int:
                              [sys.executable, "-m", "unittest", "discover", "-s", os.path.join(ROOT, "tests")])))
     results.append(("观感验收", run_acceptance(samples, args.strength)))
     results.append(("Kotlin 像素对照", run_android_parity(samples, args.strength)))
+    results.append(("Kotlin grid 对照", run_step_optional(
+        "Kotlin grid 重封对照",
+        [sys.executable, os.path.join(ROOT, "tests", "android_parity", "run_grid_parity.py")],
+    )))
     if args.apk:
         results.append(("构建推送", build_and_push()))
 

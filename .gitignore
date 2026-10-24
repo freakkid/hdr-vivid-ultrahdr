@@ -23,6 +23,11 @@ src/android/app/.cxx/
 *.iml
 captures/
 
+# 发布签名（丢失后无法再更新已发布的应用，必须仓库外备份）
+src/android/keystore.properties
+*.jks
+*.jks.enc
+
 # native 依赖（按需 clone，不入库）
 third_party/
 

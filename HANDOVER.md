@@ -894,3 +894,86 @@ Python 与 Kotlin 同步改，回归 48 项全过。
 **一条环境铁律**（花了半晚查清，别再试）：容器写出的文件，宿主机 `hdc` **一律读不到**——
 MediaStore 落在 `/data/virt_service/rgm_hmos`（无权限），SAF 的两个目标位置也都是容器内部存储，
 `hdc smode` 在零售版被禁用。取日志/取产物只能靠**屏幕截图**或**App 内分享到宿主机微信**。
+
+---
+
+## 13. 发版与分发（2026-10-24 新增）
+
+### 13.1 为什么突然要管签名
+
+此前一直发 `app-debug.apk`。debug keystore 是**每台机器各自随机生成**的（`~/.android/debug.keystore`），
+本项目有两台开发机（§1.3-A/B），换机器构建签名就变。后果：
+
+- 用户无法覆盖安装（`INSTALL_FAILED_UPDATE_INCOMPATIBLE`）
+- Obtainium / F-Droid 的自动更新**全部失效**
+- 签名一旦对外发布就**永久锁死**，想改只能换包名，等于换一个 App
+
+所以第一次公开发布前必须切到固定 keystore 的 release 包。
+
+### 13.2 一次性准备（做完立刻备份）
+
+```bash
+KEYDIR="$HOME/android-keys"        # 仓库外；两台机器各一份，私有云/U 盘同步
+mkdir -p "$KEYDIR"
+keytool -genkeypair -v \
+  -keystore "$KEYDIR/hdr-release.jks" \
+  -alias hdr -keyalg RSA -keysize 2048 -validity 10000 \
+  -storepass '口令' -keypass '口令' \
+  -dname "CN=HDR Tools, OU=Personal, O=Personal, L=CN, ST=CN, C=CN"
+```
+
+写 `src/android/keystore.properties`（已 gitignore，`*.jks` 也已 gitignore）：
+
+```properties
+storeFile=/绝对路径/hdr-release.jks
+storePassword=口令
+keyAlias=hdr
+keyPassword=口令
+```
+
+> ⚠ **keystore 丢了 = 永远无法更新已发布的应用**。备份三份，至少一份离线。
+> ⚠ 从 debug 包切到 release 包，**现有设备必须先卸载再装**（签名不同，无法覆盖）。
+
+`build.gradle.kts` 是**条件式**读取：`keystore.properties` 不存在时不创建 release 签名配置，
+`assembleDebug` 与之前完全一致，不会因为别人机器上没这个文件而构建失败。
+
+### 13.3 日常发版
+
+```bash
+python scripts/release.py --bump      # patch+1 → 构建 → 生成说明 → 建 Release
+python scripts/release.py --dry-run   # 只自检 + 预览发布说明（不构建不发布）
+```
+
+脚本做的事（顺序即检查顺序，**所有检查都在构建前**，构建要几分钟）：
+
+| 步骤 | 说明 |
+|---|---|
+| 前置检查 | 已跟踪文件无未提交改动、`keystore.properties` 存在、HEAD 已 push、tag 未被占用、`gh` 已登录 |
+| `--bump` | versionName patch +1、versionCode +1，并 `git commit`（不 push，交给 `scripts/ship.sh`） |
+| 构建 | `gradlew assembleRelease`（Windows 走 `gradlew.bat`） |
+| 校验 | APK 存在、大小 ≥ 0.5 MB、`keytool -printcert` 打印签名指纹（可确认是不是那把固定的 key） |
+| 说明 | 无历史 tag → 一页项目简介（首个公开版本）；有 tag → 按 Conventional Commits 分组的 changelog，自动附 Obtainium 安装指引 + versionCode + SHA-256 |
+| 发布 | `gh release create --latest`，APK 重命名为 `hdr-vivid-ultrahdr-<版本>.apk` |
+
+`gh` 没装：`winget install --id GitHub.cli`（Windows）/ `brew install gh`（macOS），然后 `gh auth login`。
+
+**别忘了**：发版后把新版本补进 §11.2 对照表，否则后人又要靠截屏猜版本。
+
+### 13.4 分发与推广（全程零成本）
+
+不上 App Store、不买开发者账号的前提下，Android 侧的分发成本是 0：
+
+| 渠道 | 成本 | 说明 |
+|---|---|---|
+| **GitHub Release** | 0 | 主入口，`scripts/release.py` 直接产出 |
+| **Obtainium** | 0 | 用户填仓库地址即可自动更新，弥补 APK 分发的最大短板 |
+| **酷安** | 0 | 主战场，发帖直接挂 Release 链接 |
+| **F-Droid** | 0 | 要求开源，本项目满足 |
+| 华为应用市场 | 0 | 但**需要软著**（个人可申请，官费 0，周期 1–3 月） |
+| Google Play | $25 一次性 | 新个人号需 20 人封闭测试 14 天，暂缓 |
+| App Store | $99/年 + 中国区 ICP 备案 | **暂不做**：HDR Vivid 是华为标准，iPhone 用户手里没有源文件，iOS 端需求近乎为零 |
+
+推广原则：**推「问题的解法」而不是「我做了个 App」**。标题写成「HDR Vivid 照片发出去就变灰怎么办」，
+比「我的 App 上线了」有效十倍；截图必须是「发灰 / 正常」的对比。
+
+
