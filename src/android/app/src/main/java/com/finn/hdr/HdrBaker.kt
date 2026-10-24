@@ -45,8 +45,10 @@ object HdrBaker {
          * 而且数学上无法靠调 strength 消除（strength→0 只会连 HDR 一起没了）。
          * 手机显示 HDR 时参考白仍对应 SDR 的 1.0，中间调观感与 SDR 一致，所以必须按亮度分流。
          */
-        val blendStart: Float = 0.22f,
-        val blendEnd: Float = 0.80f,
+        val blendStart: Float = 0.35f,
+        val blendEnd: Float = 0.90f,
+        /** 单个像素相对源 SDR 的最大提亮倍数。中高光被推太高会丢色彩与层次（观感=发白）。 */
+        val maxLift: Float = 1.12f,
         val dither: Boolean = true,
     )
 
@@ -179,7 +181,9 @@ object HdrBaker {
             while (i < n) {
                 val ml = 0.2126f * mapped[i * 3] + 0.7152f * mapped[i * 3 + 1] + 0.0722f * mapped[i * 3 + 2]
                 val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
-                val target = sdrLum[i] * (1f - wgt) + ml * wgt
+                // maxLift 封顶：LTM 抬升叠加后没必要把像素推得比源 SDR 亮太多，否则就是发白
+                val target = minOf(sdrLum[i] * (1f - wgt) + ml * wgt, sdrLum[i] * opt.maxLift)
+                if (ml > white) clipped++          // LTM 输出仍超白点：真正的过曝像素
                 val scale = if (ml > 1e-6f) target / ml else 0f
                 out[i * 3] = mapped[i * 3] * scale
                 out[i * 3 + 1] = mapped[i * 3 + 1] * scale
@@ -195,7 +199,7 @@ object HdrBaker {
                 if (norm > 1f) clipped++
                 val mapped = softKnee(norm, opt.knee)
                 val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
-                val target = sdrLum[i] * (1f - wgt) + mapped * wgt
+                val target = minOf(sdrLum[i] * (1f - wgt) + mapped * wgt, sdrLum[i] * opt.maxLift)
                 val scale = if (l > 1e-6f) target / l else 0f
                 out[i * 3] = hdr[i * 3] * scale
                 out[i * 3 + 1] = hdr[i * 3 + 1] * scale

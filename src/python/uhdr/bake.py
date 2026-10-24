@@ -52,8 +52,11 @@ class BakeOptions:
     # 必要性：增益图在全图都有值（实测中位 86/255），直接乘会把**中间调一起提亮**——
     # 数学上无法靠调 strength 消除（strength→0 只会连 HDR 一起没了）。
     # 手机显示 HDR 时参考白仍对应 SDR 1.0，中间调观感与 SDR 一致，所以这里必须按亮度分流。
-    blend_start: float = 0.22
-    blend_end: float = 0.80
+    blend_start: float = 0.35
+    blend_end: float = 0.90
+    # 单个像素相对源 SDR 的最大提亮倍数。中高光被推得太高会丢掉色彩与层次，
+    # 观感就是「画面发白」——实测 192~223 这档被推 +8.5% 就能被肉眼察觉。
+    max_lift: float = 1.12
 
 
 @dataclass
@@ -170,6 +173,7 @@ def bake(
         ltm_stats = ltm_res[1]
         mapped_lum = (mapped_rgb * _LUMA).sum(axis=2)
         target = sdr_lum * (1.0 - w) + mapped_lum * w
+        target = np.minimum(target, sdr_lum * opt.max_lift)
         scale = np.where(mapped_lum > 1e-6, target / np.maximum(mapped_lum, 1e-6), 0.0)
         out = np.clip(mapped_rgb * scale[..., None], 0.0, 1.0)
         norm = (out * _LUMA).sum(axis=2) / white     # 仅用于统计裁切率
@@ -178,6 +182,7 @@ def bake(
         mapped = _soft_knee(norm, opt.knee)
         # 加权混合：暗部/中间调取 SDR 原值，亮部取压缩后的 HDR
         target = sdr_lum * (1.0 - w) + mapped * w
+        target = np.minimum(target, sdr_lum * opt.max_lift)
         scale = np.where(lum > 1e-6, target / np.maximum(lum, 1e-6), 0.0)[..., None]
         out = np.clip(hdr * scale, 0.0, 1.0)
 
