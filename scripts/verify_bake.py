@@ -108,6 +108,23 @@ def run_step(title: str, cmd: list[str]) -> bool:
     return ok
 
 
+def run_android_parity(samples: list[str], strength: float) -> bool:
+    """在本机执行真实的 Kotlin HdrBaker，与 Python 逐像素比对。
+
+    缺 kotlinc 时按「跳过」处理（返回 True），不把环境缺失算成回归失败。
+    """
+    script = os.path.join(ROOT, "tests", "android_parity", "run_parity.py")
+    if not os.path.isfile(script):
+        print("-- 跳过：没有 tests/android_parity/run_parity.py")
+        return True
+    cmd = [sys.executable, script, "--samples", *samples, "--strength", str(strength)]
+    r = subprocess.run(cmd, cwd=ROOT, env=_env())
+    if r.returncode == 2:
+        print("-- 跳过：没有 kotlinc（设 KOTLINC=<path> 后可启用 Kotlin 像素对照）")
+        return True
+    return r.returncode == 0
+
+
 def build_and_push() -> bool:
     """构建 APK 并推到手机。推到手机后只剩「在卓易通里点安装」这一步是人工的。"""
     gradle = os.path.join(ROOT, "src", "android", "gradlew.bat" if os.name == "nt" else "gradlew")
@@ -220,6 +237,7 @@ def main() -> int:
                     run_step("回归测试 unittest discover",
                              [sys.executable, "-m", "unittest", "discover", "-s", os.path.join(ROOT, "tests")])))
     results.append(("观感验收", run_acceptance(samples, args.strength)))
+    results.append(("Kotlin 像素对照", run_android_parity(samples, args.strength)))
     if args.apk:
         results.append(("构建推送", build_and_push()))
 

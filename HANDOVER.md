@@ -736,6 +736,20 @@ python scripts/verify_bake.py --apk
 `scripts/check_parity.py` 是其中防「一边改了另一边没跟上」的那一层：对账 `blend/maxLift/
 strength 增量表达式/faithful 参数`，任一不一致即失败。它不需要编译器，也不需要设备。
 
+**Kotlin 像素对照（本机真跑，不需要手机）**：
+
+```bash
+python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自动跑
+```
+
+做法：`tools/kotlin_parity/` 里给了两个桩（`android.graphics.Bitmap`、`UltraHdrNative`），
+用 kotlinc 把**真实的** `HdrBaker.kt` + `LocalToneMapping.kt` 编成 jar，读同一份 PNG，
+与 `bake(..., return_pixels=True)` 的输出逐像素比对。当前 3 样例 × 3 档全部通过：
+均值差 0.36~0.53、P99 ≤3、最大 ≤5（阈值 1 / 4 / 12），即只有查表与浮点舍入差异。
+
+前提：kotlinc 在 `~/.workbuddy/binaries/kotlinc/kotlinc/bin/kotlinc.bat`（或用 `KOTLINC` 指定）；
+缺了会自动跳过，不算失败。
+
 6 个可计算指标，阈值与依据见 `tests/acceptance/README.md`。当前 **5/5 PASS**：
 中位差 +0.0、纯白比源多 0.00%、暗部 1.02×、SSIM 0.945~0.992。
 **不通过就不要推给用户** —— 这套验收就是为此建的。

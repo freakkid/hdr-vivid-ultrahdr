@@ -109,8 +109,14 @@ def _resize_rgb(img: Image.Image, size: tuple[int, int]) -> Image.Image:
 def bake(
     source: vivid_source.HdrSource,
     options: BakeOptions | None = None,
-) -> tuple[bytes, BakeStats]:
-    """把 HDR 源烘焙为 SDR JPEG 字节流。"""
+    *,
+    return_pixels: bool = False,
+) -> tuple[bytes, BakeStats] | tuple["Image.Image", BakeStats]:
+    """把 HDR 源烘焙为 SDR JPEG 字节流。
+
+    ``return_pixels=True`` 时返回**未经过 JPEG 编码**的 PIL 图像，仅供数值对照
+    （`tests/android_parity/` 用它和 Kotlin 的像素结果逐点比对，避免编解码噪声）。
+    """
     import io
 
     opt = options or BakeOptions()
@@ -237,7 +243,7 @@ def bake(
         profile=opt.profile,
         ltm=ltm_stats,
     )
-    return buf.getvalue(), stats
+    return (img, stats) if return_pixels else (buf.getvalue(), stats)
 
 
 def bake_file(src_path: str, out_path: str, options: BakeOptions | None = None) -> BakeStats:
