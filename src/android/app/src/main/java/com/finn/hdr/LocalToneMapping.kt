@@ -29,9 +29,9 @@ import kotlin.math.min
  *  2. 顺序必须是「先 base 收缩、后压高光」。反序会让被压缩的高光被 rangeCompress
  *     再次提起，导致白点漂移；
  *  3. 双斜率肩（2026-10-25 替代指数软膝）：指数软膝把所有高光收敛到同一渐近线，
- *     叠加 0.96 天花板后实测把 1.5~2.4× 白点全部拍平在 [0.95, 0.96]。新结构：
- *     SDR 带 [highlightStart..1.0] 线性压到 shoulderWhite（0.93）让出空间，
- *     HDR 超白带 [0..shoulderSpan] 小斜率线性延伸到 SHOULDER_TARGET（0.96），
+ *     叠加 0.96 天花板后实测把 1.5~2.4× 白点全部拍平在 0.95~0.96 一带。新结构：
+ *     SDR 带 highlightStart..1.0 线性压到 shoulderWhite（0.93）让出空间，
+ *     HDR 超白带 0..shoulderSpan 小斜率线性延伸到 SHOULDER_TARGET（0.96），
  *     更亮的像素由 ceiling 兜底；ceiling 随之放开到 1.0（sRGB 250→255 是
  *     「比白更亮」的唯一去处，纯白由验收 clip_delta 阈值看守）。
  *
@@ -65,8 +65,8 @@ object LocalToneMapping {
         /** 高光软膝起点（线性亮度，1.0 = SDR 白点），1.0 = 不压 */
         val highlightStart: Float = 0.78f,
         /**
-         * 双斜率肩：SDR 带 [highlightStart..1.0] 的线性映射目标（线性亮度）。
-         * 压到 0.93 给 HDR 超白增量让出 [0.93..1.0]；实测 0.90/0.95 时高光
+         * 双斜率肩：SDR 带 highlightStart..1.0 的线性映射目标（线性亮度）。
+         * 压到 0.93 给 HDR 超白增量让出 0.93..1.0；实测 0.90/0.95 时高光
          * spread 回落，0.93 最优（sweep2，2026-10-25）。
          */
         val shoulderWhite: Float = 0.93f,
@@ -299,7 +299,7 @@ object LocalToneMapping {
      * 指数软膝（k + s*(1 - e^(-(x-k)/s))）把所有高光收敛到同一渐近线 0，叠加 0.96
      * 天花板后实测把 1.5~2.4× 白点全部拍平在 [0.95, 0.96]。双斜率结构
      * （x = log2(L/white)，0 = SDR 白点）：
-     *   x <= 0（SDR 带 [start..1.0]）：k + (x−k)·a1 线性压到 log2(shoulderWhite)，
+     *   x <= 0（SDR 带 start..1.0）：k + (x−k)·a1 线性压到 log2(shoulderWhite)，
      *        a1 = 1 − log2(shoulderWhite)/k < 1（shoulderWhite 须 < 1.0，否则非单调）；
      *   x >  0（HDR 超白带）        ：log2(shoulderWhite) + x·a2 小斜率线性延伸，
      *        a2 = (log2(SHOULDER_TARGET) − log2(shoulderWhite)) / span，

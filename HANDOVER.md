@@ -776,6 +776,14 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
   1.5~2.4× 白点全部拍平在 [0.95, 0.96]（spread 恒定 0.417×源）。已换双斜率肩
   （SDR 带线性压到 0.93、HDR 带延伸到 0.96、ceiling=1.0），纯白由验收
   `clip_delta ≤ +1%` 看守，实测仅 +0.01%。改回去前先读 `ltm.py` 文件头。
+- **KDoc 区间禁用方括号**（2026-10-25 深夜，0.1.23 打包时爆）：`[highlightStart..1.0]`
+  这类写法会被 KDoc 当链接语法，`..` 触发 `Closing bracket expected`，`assembleDebug`
+  直接挂。**门禁拦不住**：LTM 双实现对照用的独立 kotlinc 2.0.21 容忍该写法，
+  APK 构建用的 Gradle KGP 1.9.24 严查；静态自检只数括号配对、不解析 KDoc ——
+  于是「8 步门禁全绿 + 已 push」的 `a71e9de` 编译不出 APK。修法：KDoc 区间一律
+  写裸文本；要预检就用 gradle cache 里的 `kotlin-compiler-embeddable-1.9.24.jar`
+  （配 stdlib/trove4j/annotations）单文件编译，与 APK 构建同版本。
+  详见 `docs/07` §2 次级项（「括号配平 ≠ 可编译」的现场实例）。
 - **统计口径要一致**：曾用「源 BT.601 亮度 vs 输出 RGB 算术平均」算出「已对齐」，
   实际差 +13。`tests/acceptance/` 两边统一用 `convert("L")`。
 - **字段加了不等于落地**（2026-10-24）：Kotlin `HdrBaker.Options` 有 `maxLift`，但两个分支的
@@ -794,7 +802,7 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地现存与手机上待装的都是 `out/HdrVividUltraHdr-0.1.18-debug.apk`（2.28 MB）。
+本地产物与手机上待装的都是 `out/HdrVividUltraHdr-0.1.23-debug.apk`（2.17 MB，2026-10-25 已推送，卓易通待安装）。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 

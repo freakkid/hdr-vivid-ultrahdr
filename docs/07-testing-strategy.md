@@ -33,6 +33,15 @@
 
 次级（P1）：`check_android_project.py` 的恒真项（`gradle.agp_version`）、`liftCap` 只数出现次数（注释也能凑数，应剥注释后匹配两处 `minOf(...)`）、括号配平 ≠ 可编译（真正门禁应是 `./gradlew compileDebugKotlin`）。
 
+> 2026-10-25 深夜实测：最后这条当场应验。`LocalToneMapping.kt` 双斜率肩 docstring 里的
+> KDoc 区间写法 `[highlightStart..1.0]` —— 括号配平自检全绿、独立 kotlinc 2.0.21
+> 编译通过（LTM 双实现对照 PASS），但 APK 构建用的 Gradle KGP 1.9.24 报
+> `Closing bracket expected`，`assembleDebug` 挂。**新增维度：门禁编译器与构建
+> 编译器不同版本**，2.0.21 容忍的 KDoc 1.9.24 严查（且同文件内是否报错还依赖
+> 上下文，对象头 KDoc 块里的同款写法反而不报——没有规律可循，只能全禁）。
+> 修法：KDoc 区间一律裸文本；预检用 gradle cache 的 `kotlin-compiler-embeddable-<KGP版本>.jar`
+> 单文件编译，与构建同版本。长期方案仍是 `compileDebugKotlin` 进门禁（§3-L1）。
+
 ---
 
 ## 3. 分层金字塔（目标形态）
