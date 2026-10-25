@@ -26,13 +26,14 @@ for tag in ("local", "wechat"):
     with open(OUT / f"input_{tag}.bin", "rb") as f:
         w, h = struct.unpack("<ii", f.read(8))
         white, = struct.unpack("<f", f.read(4))
-        p = struct.unpack("<6f", f.read(24))
+        p = struct.unpack("<8f", f.read(32))
         n = w * h
         hdr = np.frombuffer(f.read(n * 3 * 4), dtype=np.float32).reshape(h, w, 3).copy()
         lum = np.frombuffer(f.read(n * 4), dtype=np.float32).reshape(h, w).copy()
 
     params = ltm.LtmParams(radius_frac=p[0], eps=p[1], range_compress=p[2],
-                           detail_gain=p[3], black_point=p[4], highlight_start=p[5])
+                           detail_gain=p[3], black_point=p[4], highlight_start=p[5],
+                           shoulder_white=p[6], shoulder_span=p[7])
     py_out, py_stats = ltm.apply(hdr, white, params)
     kt_out = np.fromfile(OUT / f"kotlin_out_{tag}.bin", dtype=np.float32).reshape(h, w, 3)
 

@@ -6,6 +6,7 @@ venv/
 
 # 生成产物
 tests/_tmp/
+tests/acceptance/_tmp/
 out/*.log
 src/android/*.log
 *.log

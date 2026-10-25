@@ -23,6 +23,18 @@
     local  ：本地查看 / 相册 / 邮件，细节增益高，追求观感
     wechat ：微信转发，细节增益压到接近 1，因为平台二次压缩会把高频细节
              变成块效应与振铃，过强的局部对比在压缩后反而更难看
+
+双斜率高光肩（2026-10-25，替代指数软膝）
+    指数软膝把 1.5~2.4× 白点的亮度全部收敛到同一条渐近线，叠加 0.96 天花板后
+    实测高光被拍平在 [0.95, 0.96]（mapped 的 spread 只剩源的 8%，输出高光
+    spread 恒为 0.417×源）。改为不收敛的双斜率结构：
+      SDR 带 [highlight_start..1.0]：线性压到 shoulder_white（0.93），
+          给 HDR 增量让出 [0.93..1.0] 的空间；
+      HDR 超白带 [0..shoulder_span]：小斜率线性延伸到 0.96（log2 域），
+          覆盖实测峰值 lum≈2.4× 白点（x≈1.26，span 取 1.3）；
+    更高的亮度由 apply 的 ceiling 钳制兜底。ceiling 随之放开到 1.0 ——
+    sRGB 250→255 这 5 个灰阶是「比白更亮」的唯一去处；纯白由 clip_delta
+    阈值看守（旧教训「收敛到 1.0 挤成纯白」针对旧全局映射，新结构下不成立）。
 """
 from __future__ import annotations
 
@@ -49,6 +61,11 @@ class LtmParams:
     detail_gain      detail 增益，1.0 = 不变
     black_point      黑位重锚（线性归一化亮度），用来消除压缩带来的灰雾
     highlight_start  高光软膝起点（线性亮度，1.0 = SDR 白点），1.0 = 不压
+    shoulder_white   双斜率肩：SDR 带 [highlight_start..1.0] 的线性映射目标
+                     （线性亮度）。压到 0.93 给 HDR 超白增量让出 [0.93..1.0]；
+                     实测 0.90/0.95 时高光 spread 回落，0.93 最优（sweep2）
+    shoulder_span    双斜率肩：HDR 超白带覆盖范围（log2 域，相对白点）。
+                     实测峰值 lum≈2.4× 白点（x≈1.26），取 1.3 全覆盖
     """
 
     radius_frac: float = 1.0 / 48.0
@@ -57,6 +74,8 @@ class LtmParams:
     detail_gain: float = 1.30
     black_point: float = 0.0020
     highlight_start: float = 0.78
+    shoulder_white: float = 0.93
+    shoulder_span: float = 1.3
 
 
 def params_for_profile(profile: str) -> LtmParams | None:
@@ -72,6 +91,8 @@ def params_for_profile(profile: str) -> LtmParams | None:
             detail_gain=1.12,
             black_point=0.0025,
             highlight_start=0.72,
+            shoulder_white=0.93,
+            shoulder_span=1.3,
         )
     if profile == "faithful":
         # 保真档：几乎不做 base 收缩（range_compress≈1 表示不抬暗部），
@@ -83,6 +104,8 @@ def params_for_profile(profile: str) -> LtmParams | None:
             detail_gain=1.08,
             black_point=0.0020,
             highlight_start=0.70,
+            shoulder_white=0.93,
+            shoulder_span=1.3,
         )
     # local：观感优先
     return LtmParams(
@@ -92,6 +115,8 @@ def params_for_profile(profile: str) -> LtmParams | None:
         detail_gain=1.32,
         black_point=0.0020,
         highlight_start=0.78,
+        shoulder_white=0.93,
+        shoulder_span=1.3,
     )
 
 
@@ -130,23 +155,38 @@ def guided_filter(guide: np.ndarray, r: int, eps: float) -> np.ndarray:
     return (_box_blur(a, r) * guide + _box_blur(b, r)).astype(np.float32)
 
 
-def _compress_highlights(x: np.ndarray, start_linear: float) -> np.ndarray:
-    """log2 域高光软膝：start 以下不动作，以上单调收敛到 0（= 白点）。
+# 双斜率肩的 HDR 段名义落点（线性亮度）：肩曲线在 x=shoulder_span 处到达该值，
+# 更亮的像素由 apply 的 ceiling 钳制兜底。取 0.96 而非 ceiling 本身：
+# ceiling=1.0 时若让曲线直落 1.0，实测峰值（x≈1.26）附近会直接顶纯白；
+# 留 4% 名义余量后，250~255 灰阶只被 x>span 的极亮像素使用（clip_delta +0.01%）。
+_SHOULDER_TARGET = 0.96
 
-    关键点：**必须收敛到 0，而不是收敛到 2·knee**。
-    早期实现写成 knee - span*(1-exp(...))，会把高光越压越暗、甚至压成负值，
-    表现为「高光区比中间调还黑」——这是最容易漏掉的符号错误。
 
-    x_out = k + s·(1 − e^(−(x−k)/s))，其中 k = log2(start)、s = −k。
-    在 x = k 处一阶导连续，因此不会出现可见的折线接缝。
+def _compress_highlights(
+    x: np.ndarray,
+    start_linear: float,
+    shoulder_white: float = 0.93,
+    shoulder_span: float = 1.3,
+) -> np.ndarray:
+    """log2 域双斜率高光肩（2026-10-25 替代指数软膝，单调、保斜率、不收敛）。
+
+    指数软膝（k + s·(1 − e^(−(x−k)/s))）把所有高光收敛到同一渐近线 0，
+    叠加 0.96 天花板后实测把 1.5~2.4× 白点的亮度全部拍平在 [0.95, 0.96]。
+    双斜率结构（x = log2(L/white)，0 = SDR 白点）：
+      x <= 0（SDR 带 [start..1.0]）：y = k + (x−k)·a1，把该带线性压到
+           log2(shoulder_white)，a1 = 1 − log2(shoulder_white)/k < 1；
+      x >  0（HDR 超白带）        ：y = log2(shoulder_white) + x·a2，
+           a2 = (log2(_SHOULDER_TARGET) − log2(shoulder_white)) / span，
+           小斜率线性延伸，在 x = span 处到达 _SHOULDER_TARGET。
+    两段在 x = 0 处函数值连续（都等于 log2(shoulder_white)）；x = k 以下恒等。
     """
     k = float(np.log2(max(start_linear, 1e-4)))   # 负值（例如 0.78 → -0.358）
-    if k >= 0.0:
-        return np.minimum(x, 0.0).astype(np.float32)
-    s = -k
-    over = np.maximum(x - k, 0.0)
-    rolled = k + s * (1.0 - np.exp(-over / s))
-    return np.where(x > k, rolled, x).astype(np.float32)
+    y0 = float(np.log2(max(shoulder_white, 0.5)))
+    a1 = 1.0 - y0 / k if k < 0 else 1.0
+    a2 = (float(np.log2(_SHOULDER_TARGET)) - y0) / max(shoulder_span, 1e-3)
+    below = k + (x - k) * np.float32(a1)
+    above = y0 + x * np.float32(a2)
+    return np.where(x > 0.0, above, below).astype(np.float32)
 
 
 # --------------------------------------------------------------------------
@@ -157,12 +197,16 @@ def apply(
     hdr_linear: np.ndarray,
     white: float,
     params: LtmParams,
-    ceiling: float = 0.96,
+    ceiling: float = 1.0,
 ) -> tuple[np.ndarray, dict]:
     """把线性 HDR 压到显示线性域（1.0 = SDR 白点）。
 
     hdr_linear : HxWx3 float32，线性光，1.0 近似 SDR 白
     white      : 归一化白点（高分位亮度），来自调用方
+    ceiling    : 高光硬钳制（线性亮度）。1.0 = 允许顶到纯白 —— 配合双斜率肩，
+                 sRGB 250→255 是「比白更亮」的唯一去处；纯白占比由验收的
+                 clip_delta（≤+1 个百分点）看守。0.96 及以下是旧全局映射时代的
+                 保守值，会把肩曲线让出的高光增量又拍平。
     返回 (out_linear, stats)
     """
     h, w = hdr_linear.shape[:2]
@@ -179,11 +223,13 @@ def apply(
     # 先抬暗部（base 向 0 收缩），再压高光 —— 顺序不能反，
     # 否则被压缩的高光会被 range_compress 再次提起，导致白点漂移。
     base_lift = base * np.float32(params.range_compress)
-    base_c = _compress_highlights(base_lift, params.highlight_start)
+    base_c = _compress_highlights(base_lift, params.highlight_start,
+                                  params.shoulder_white, params.shoulder_span)
     x_out = base_c + detail * np.float32(params.detail_gain)
 
-    # 不允许超过白点。收敛到 log2(ceiling) 而不是 0：
-    # 顶到 1.0 会让大片高光变成纯白、丢掉层次（实测纯白占比比源多 3.6 个百分点）。
+    # 硬钳制到 ceiling（默认 1.0 = 纯白）。双斜率肩已保证 x<=span 时曲线
+    # 落在 0.96 以内，这里只拦截 span 之外的极亮像素；纯白占比由验收
+    # clip_delta 看守，不再需要「留 4% 余量」那种一刀切收敛。
     x_out = np.minimum(x_out, float(np.log2(max(ceiling, 0.5))))
 
     L_out = np.exp2(x_out).astype(np.float32)

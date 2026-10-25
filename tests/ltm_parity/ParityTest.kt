@@ -20,7 +20,7 @@ fun main(args: Array<String>) {
     val w = bb.int
     val h = bb.int
     val white = bb.float
-    val p = FloatArray(6) { bb.float }
+    val p = FloatArray(8) { bb.float }
     val n = w * h
     val hdr = FloatArray(n * 3) { bb.float }
     val lum = FloatArray(n) { bb.float }
@@ -29,6 +29,7 @@ fun main(args: Array<String>) {
     val params = LocalToneMapping.Params(
         radiusFrac = p[0], eps = p[1], rangeCompress = p[2],
         detailGain = p[3], blackPoint = p[4], highlightStart = p[5],
+        shoulderWhite = p[6], shoulderSpan = p[7],
     )
     val (out, stats) = LocalToneMapping.apply(hdr, lum, w, h, white, params)
 

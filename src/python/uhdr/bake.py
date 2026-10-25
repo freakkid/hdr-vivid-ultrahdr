@@ -114,27 +114,22 @@ def to_srgb(img: "Image.Image") -> "Image.Image":
     `sRGB EOTF with DCI-P3 Color Gamut`）。若直接丢掉 ICC，系统会按 sRGB 解释这些
     数字，平均饱和度实测掉 8.8 个点，观感就是「烘焙图比原图灰」。
 
-    只在能拿到 ICC 且不是 sRGB 时转换；任何异常都退回原图，不让色彩管理把主链路搞挂。
+    只在能拿到 ICC 且不是 sRGB 时转换。有 ICC 但 ImageCms 转换失败时**必须抛错**：
+    此前 except 后静默退回原图，色彩管理一坏基准和输出一起变灰，验收照样全绿
+    （docs/07 §2-5「自证」）。无 ICC 或本身就是 sRGB 的正常路径不变。
     """
-    icc = None
-    try:
-        icc = img.info.get("icc_profile")
-    except Exception:
-        return img.convert("RGB")
+    icc = img.info.get("icc_profile")
     if not icc:
         return img.convert("RGB")
-    try:
-        from PIL import ImageCms
+    from PIL import ImageCms
 
-        src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
-        desc = ImageCms.getProfileDescription(src).lower()
-        if "srgb" in desc and "p3" not in desc and "2020" not in desc:
-            return img.convert("RGB")
-        return ImageCms.profileToProfile(
-            img.convert("RGB"), src, ImageCms.createProfile("sRGB"), outputMode="RGB"
-        )
-    except Exception:
+    src = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+    desc = ImageCms.getProfileDescription(src).lower()
+    if "srgb" in desc and "p3" not in desc and "2020" not in desc:
         return img.convert("RGB")
+    return ImageCms.profileToProfile(
+        img.convert("RGB"), src, ImageCms.createProfile("sRGB"), outputMode="RGB"
+    )
 
 
 def bake(

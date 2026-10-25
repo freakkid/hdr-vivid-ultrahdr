@@ -6,12 +6,14 @@
 再把两个产物都用 Python 解析回来，比对语义（item 集合 / tile 载荷 / grid 参数 / dimg 顺序）。
 
 用法：python tests/android_parity/run_grid_parity.py [--rebuild]
-退出码：0 一致 / 1 不一致 / 2 环境缺失（无 kotlinc）
+退出码（三态，docs/07 §2-1）：0 一致 / 1 不一致（FAIL） /
+2 工具缺失（无 kotlinc，SKIP）/ 3 编译失败（FAIL）
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import subprocess
 import sys
@@ -32,12 +34,12 @@ SRC = [
 
 def find_kotlinc() -> str | None:
     from shutil import which
-    for c in [
+    for i, c in enumerate([
         os.environ.get("KOTLINC", ""),
         os.path.expanduser("~/.workbuddy/binaries/kotlinc/kotlinc/bin/kotlinc.bat"),
         os.path.expanduser("~/.workbuddy/binaries/kotlinc/kotlinc/bin/kotlinc"),
         "kotlinc",
-    ]:
+    ]):
         if not c:
             continue
         if os.sep in c or "/" in c:
@@ -45,12 +47,40 @@ def find_kotlinc() -> str | None:
                 return c
         elif which(c):
             return c
+        if i == 0 and os.environ.get("KOTLINC"):
+            # 显式指定的 KOTLINC 无效时不静默回落（与 run_parity.py 口径一致）
+            print(f"[warn] KOTLINC={c} 不存在，且不再回落默认路径 → 按工具缺失处理")
+            return None
     return None
 
 
+def _src_fingerprint() -> str:
+    """参与编译的源码树 sha256 —— mtime 判断会被 git checkout 骗过（docs/07 §2-7）。"""
+    h = hashlib.sha256()
+    for p in SRC:
+        with open(p, "rb") as f:
+            h.update(os.path.basename(p).encode("utf-8"))
+            h.update(b"\0")
+            h.update(f.read())
+    return h.hexdigest()
+
+
+SIDECAR = JAR + ".sha256"
+
+
+def _read_sidecar() -> str:
+    try:
+        with open(SIDECAR, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def build(kotlinc: str, rebuild: bool) -> bool:
-    if os.path.isfile(JAR) and not rebuild and os.path.getmtime(JAR) > max(map(os.path.getmtime, SRC)):
-        return True
+    if os.path.isfile(JAR) and not rebuild:
+        if _read_sidecar() == _src_fingerprint():
+            return True
+        print("[build] 源码树哈希与侧车不符（git checkout / 换机器），强制重编")
     os.makedirs(os.path.dirname(JAR), exist_ok=True)
     env = dict(os.environ)
     env.setdefault("JAVA_HOME", os.path.expanduser("~/.workbuddy/binaries/jdk/17"))
@@ -61,6 +91,8 @@ def build(kotlinc: str, rebuild: bool) -> bool:
     if r.returncode != 0:
         print("[build] 失败：\n" + (r.stderr or r.stdout)[-1500:])
         return False
+    with open(SIDECAR, "w", encoding="utf-8") as f:
+        f.write(_src_fingerprint())
     return True
 
 
@@ -74,7 +106,7 @@ def main() -> int:
         print("没有 kotlinc：设 KOTLINC=<path>")
         return 2
     if not build(kotlinc, args.rebuild):
-        return 2
+        return 3
 
     # 合成源：2x2 增益图 grid（#42）+ 3x4 主图 grid（#50）
     import test_heif_grid as t

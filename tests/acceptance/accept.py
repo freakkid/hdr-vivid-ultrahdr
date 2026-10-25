@@ -3,7 +3,7 @@
 为什么需要它
 ------------
 人工看图和口头确认不可回归，也无法在 CI 里拦住退化。这里把用户提的验收目标
-翻译成 5 个可计算指标，跑完直接给 PASS / FAIL。
+翻译成可计算指标，跑完直接给 PASS / FAIL（含 2026-10-25 加入的「层次」下限）。
 
 验收口径（依据见 README.md）
 --------------------------
@@ -70,12 +70,67 @@ DEFAULT_THRESHOLDS = {
     # 饱和度**下限**：v0.1.21 就是因为这里没有下限，丢了 Display P3 的 ICC 后
     # 饱和度掉到 0.873 却仍然全绿，发出去才发现「烘焙图比原图灰」。
     "sat_ratio_min": 0.92,
+    # ---- 「层次少」下限（2026-10-25 加入，当晚随双斜率肩上调）----
+    # 首轮依据：用户对 0.1.22 的反馈「层次少」量化 —— local@0.70 把高光分位距压到
+    # 源的 0.42~0.53、高光局部对比压到 0.64~0.78（3 真实样本 × local/wechat/faithful
+    # × strength 0.40/0.70 实测，见 README「层次实测」）。
+    # 2026-10-25 晚：根因定位为「指数软膝把 1.5~2.4× 白点全部拍平在 [0.95, 0.96]」，
+    # LTM 换双斜率肩（SDR 带线性压到 0.93 让出空间、HDR 带小斜率延伸到 0.96、
+    # ceiling 放开到 1.0）后复测（3 真实样本 × local）：
+    #   hl_spread 0.50~0.80（0.70 档最低 0.50；旧指数肩为恒定 0.417）
+    #   hl_hf     0.78~0.97（0.70 档最低 0.78；旧 0.690）
+    #   hf_all    1.01~1.15
+    # 下限随实测上调，且必须落在旧算法实测值（0.417 / 0.690）之下 ——
+    # 保证「换回旧肩会被门禁拦住」。钉在出货档实测最低值附近，只守不调；
+    # 再次调参提升后仍须上调，不许反向放宽。
+    "hl_spread_min": 0.45,   # 高光区（源 L≥217）P95−P50 分位距之比 out/src
+    "hl_hf_min": 0.75,       # 高光区梯度能量之比 out/src（0.70 档实测最低 0.78）
+    "hf_all_min": 0.95,      # 全图梯度能量之比 out/src（实测最低 1.01；防整体磨平）
 }
+
+# 层次下限只对出货 profile 生效；off 是 A/B 对照旧行为，不代表出货物性。
+# 验收强度矩阵：0.40 是定档基准，0.70 是产品默认（docs/07 §2-4）。
+ACCEPT_PROFILES = ("local", "off", "wechat", "faithful")
+ACCEPT_STRENGTHS = (0.40, 0.70)
+HL_FLOOR_PROFILES = ("local", "wechat", "faithful")
 
 
 def _saturation(img: Image.Image) -> float:
     hsv = np.asarray(img.convert("HSV"), dtype=np.float32)
     return float(hsv[..., 1].mean())
+
+
+def _hf_energy(l: np.ndarray, mask: np.ndarray | None = None) -> float:
+    """梯度能量：|dx|+|dy| 的均值；mask 限定两端都落在 mask 内的差分。"""
+    gx = np.abs(np.diff(l, axis=1))
+    gy = np.abs(np.diff(l, axis=0))
+    if mask is not None:
+        m = mask.astype(bool)
+        gx = gx[m[:, :-1] & m[:, 1:]]
+        gy = gy[m[:-1, :] & m[1:, :]]
+    n = gx.size + gy.size
+    return float((gx.sum() + gy.sum()) / max(n, 1))
+
+
+def _hl_metrics(s: np.ndarray, o: np.ndarray) -> tuple[float | None, float | None]:
+    """高光层次指标（分位距比、梯度能量比）。
+
+    源高光区太小（<100 像素）或本身就是平坦平台（P95−P50 < 4 灰阶，如合成样本）
+    时返回 None —— 该用例不判这两项，避免除零噪声。以**源**的分位距做判据，
+    源有层次而输出被压平才是要拦的退化。
+    """
+    hl = s >= 217
+    if int(hl.sum()) < 100:
+        return None, None
+
+    def spread(v: np.ndarray) -> float:
+        return float(np.percentile(v, 95) - np.percentile(v, 50))
+
+    s_spread = spread(s[hl])
+    if s_spread < 4.0:
+        return None, None
+    return spread(o[hl]) / max(s_spread, 1e-6), \
+        _hf_energy(o, hl) / max(_hf_energy(s, hl), 1e-6)
 
 
 def measure(sdr: Image.Image, out: Image.Image) -> dict:
@@ -86,6 +141,7 @@ def measure(sdr: Image.Image, out: Image.Image) -> dict:
     o_shadow = float(o[shadow].mean()) if shadow.any() else 1.0
     s_clip = float((s >= 254).mean())
     o_clip = float((o >= 254).mean())
+    hl_spread, hl_hf = _hl_metrics(s, o)
     return {
         "median_delta": float(np.median(o) - np.median(s)),
         "mean_delta": float(o.mean() - s.mean()),
@@ -95,11 +151,15 @@ def measure(sdr: Image.Image, out: Image.Image) -> dict:
         "shadow_lift": float(o_shadow / max(s_shadow, 1e-6)),
         "ssim": float(ssim_map(s, o).mean()),
         "sat_ratio": float(_saturation(out) / max(_saturation(sdr), 1e-6)),
+        # 层次（源高光区退化时为 None，judge 跳过）
+        "hf_all": _hf_energy(o) / max(_hf_energy(s), 1e-6),
+        "hl_spread": hl_spread,
+        "hl_hf": hl_hf,
     }
 
 
-def judge(m: dict, th: dict) -> list[str]:
-    """返回失败原因列表；空表示 PASS。"""
+def judge(m: dict, th: dict, apply_hl: bool = True) -> list[str]:
+    """返回失败原因列表；空表示 PASS。apply_hl=False 时跳过高光层次下限（off 档）。"""
     bad = []
     if abs(m["median_delta"]) > th["median_delta_max"]:
         bad.append("中位亮度偏离 %+.1f（上限 %.1f）" % (m["median_delta"], th["median_delta_max"]))
@@ -117,7 +177,37 @@ def judge(m: dict, th: dict) -> list[str]:
     if m["sat_ratio"] < th["sat_ratio_min"]:
         bad.append("饱和度 x%.2f（下限 %.2f，疑似丢失 ICC/色彩管理）"
                    % (m["sat_ratio"], th["sat_ratio_min"]))
+    if m.get("hf_all") is not None and m["hf_all"] < th["hf_all_min"]:
+        bad.append("全图局部对比 x%.2f（下限 %.2f，疑似整体被磨平）"
+                   % (m["hf_all"], th["hf_all_min"]))
+    if apply_hl:
+        if m.get("hl_spread") is not None and m["hl_spread"] < th["hl_spread_min"]:
+            bad.append("高光层次 x%.2f（下限 %.2f，高光被压平 = 用户说的「层次少」）"
+                       % (m["hl_spread"], th["hl_spread_min"]))
+        if m.get("hl_hf") is not None and m["hl_hf"] < th["hl_hf_min"]:
+            bad.append("高光局部对比 x%.2f（下限 %.2f）"
+                       % (m["hl_hf"], th["hl_hf_min"]))
     return bad
+
+
+def _sdr_baseline(img: Image.Image) -> Image.Image:
+    """独立的 sRGB 归一基准，不复用 bake.to_srgb（docs/07 §2-5「自证」）。
+
+    直接用 ImageCms 读源图自身 ICC → sRGB，与被测实现零共享：若 bake.to_srgb
+    被改坏（静默丢 ICC、转换出错退回原图），对照基准不会跟着一起变灰。
+    """
+    icc = img.info.get("icc_profile")
+    if not icc:
+        return img.convert("RGB")
+    from PIL import ImageCms
+
+    src_prof = ImageCms.ImageCmsProfile(io.BytesIO(icc))
+    desc = ImageCms.getProfileDescription(src_prof).lower()
+    if "srgb" in desc and "p3" not in desc and "2020" not in desc:
+        return img.convert("RGB")
+    return ImageCms.profileToProfile(
+        img.convert("RGB"), src_prof, ImageCms.createProfile("sRGB"), outputMode="RGB"
+    )
 
 
 def bake_and_measure(src: vivid_source.HdrSource,
@@ -126,8 +216,9 @@ def bake_and_measure(src: vivid_source.HdrSource,
     opt = bake.BakeOptions(long_edge=long_edge, profile=profile, strength=strength)
     data, _stats = bake.bake(src, opt)
     out = Image.open(io.BytesIO(data)).convert("RGB")
-    # 与烘焙端一致：源图先转 sRGB（否则 P3 图会被当成「更灰」的对照基准）
-    sdr = bake.to_srgb(Image.open(io.BytesIO(src.primary_jpeg)))
+    # 与烘焙端口径一致：源图先转 sRGB（否则 P3 图会被当成「更灰」的对照基准），
+    # 但基准用独立的 ImageCms 链路，不经过被测的 bake.to_srgb
+    sdr = _sdr_baseline(Image.open(io.BytesIO(src.primary_jpeg)))
     if sdr.size != out.size:
         sdr = sdr.resize(out.size, Image.Resampling.LANCZOS)
     return sdr, out, measure(sdr, out)
@@ -140,22 +231,28 @@ def run(real_paths: list[str], as_json: bool, update: bool) -> int:
     os.makedirs(tmp_dir, exist_ok=True)
     synth_path = os.path.join(tmp_dir, "synth_cuva.jpg")
     synthetic.write_cuva_sample(synth_path, base_long_edge=1200)
-    for profile in ("local", "off", "wechat", "faithful"):
-        cases.append(("synthetic/" + profile, synth_path, profile, 0.40))
+    for profile in ACCEPT_PROFILES:
+        for strength in ACCEPT_STRENGTHS:
+            cases.append(("synthetic/%s@%.2f" % (profile, strength), synth_path, profile, strength))
     for p in real_paths:
         for profile in ("local", "off"):
-            cases.append(("real:" + os.path.basename(p) + "/" + profile, p, profile, 0.40))
+            for strength in ACCEPT_STRENGTHS:
+                cases.append(("real:%s/%s@%.2f" % (os.path.basename(p), profile, strength),
+                              p, profile, strength))
+
+    def _fmt(v, nd=4):
+        return "-" if v is None else round(v, nd)
 
     rows = []
     failures = 0
     for cid, path, profile, strength in cases:
         src = vivid_source.parse_file(path)
         sdr, _out, m = bake_and_measure(src, profile, strength)
-        bad = judge(m, DEFAULT_THRESHOLDS)
+        bad = judge(m, DEFAULT_THRESHOLDS, apply_hl=profile in HL_FLOOR_PROFILES)
         failures += bool(bad)
         rows.append({
             "case": cid, "profile": profile, "strength": strength,
-            "metrics": {k: round(v, 4) for k, v in m.items()},
+            "metrics": {k: _fmt(v) for k, v in m.items()},
             "pass": not bad, "reasons": bad,
         })
 
@@ -167,18 +264,24 @@ def run(real_paths: list[str], as_json: bool, update: bool) -> int:
         }, ensure_ascii=False, indent=2))
     else:
         th = DEFAULT_THRESHOLDS
-        print("验收阈值: 中位±%.0f 均值±%.0f 纯白<%.0f%% 暗部<%.2fx SSIM>%.2f 饱和<%.2f"
+        print("验收阈值: 中位±%.0f 均值±%.0f 纯白<%.0f%% 暗部<%.2fx SSIM>%.2f 饱和 %.2f~%.2f"
               % (th["median_delta_max"], th["mean_delta_max"], th["clip_ratio_max"] * 100,
-                 th["shadow_lift_max"], th["ssim_min"], th["sat_ratio_max"]))
+                 th["shadow_lift_max"], th["ssim_min"], th["sat_ratio_min"], th["sat_ratio_max"]))
+        print("层次下限: 高光分位距>%.2f 高光对比>%.2f 全图对比>%.2f（%s 档生效）"
+              % (th["hl_spread_min"], th["hl_hf_min"], th["hf_all_min"],
+                 "/".join(HL_FLOOR_PROFILES)))
         print()
-        print("%-34s %7s %7s %7s %7s %7s %6s" %
-              ("用例", "中位差", "均值差", "纯白%", "暗部", "SSIM", "饱和"))
+        print("%-38s %7s %7s %7s %8s %8s %8s %s" %
+              ("用例", "中位差", "均值差", "纯白%", "高光层次", "高光对比", "全图对比", "结论"))
         for r in rows:
             m = r["metrics"]
-            print("%-34s %+7.1f %+7.1f %6.2f%% %6.2fx %7.3f %6.2f %s"
+            print("%-38s %+7.1f %+7.1f %6.2f%% %8s %8s %8s %s"
                   % (r["case"], m["median_delta"], m["mean_delta"],
-                     m["clip_ratio"] * 100, m["shadow_lift"], m["ssim"],
-                     m["sat_ratio"], "PASS" if r["pass"] else "FAIL"))
+                     m["clip_ratio"] * 100,
+                     _fmt(m["hl_spread"], 2) if m["hl_spread"] != "-" else "-",
+                     _fmt(m["hl_hf"], 2) if m["hl_hf"] != "-" else "-",
+                     _fmt(m["hf_all"], 2),
+                     "PASS" if r["pass"] else "FAIL"))
             for reason in r["reasons"]:
                 print("      · " + reason)
         print()

@@ -6,8 +6,10 @@ Python ltm.py 与 Kotlin LocalToneMapping.kt 是两套独立实现，本脚本�
 两侧同输入同参数跑 apply，由 compare.py 比对。
 
 输出（tests/_tmp/ltm_parity/，小端）：
-  input_<tag>.bin    int32 w, int32 h, float32 white, float32 params[6],
+  input_<tag>.bin    int32 w, int32 h, float32 white, float32 params[8],
                      float32 hdr[w*h*3], float32 lum[w*h]
+                    （params[8] = radius_frac, eps, range_compress, detail_gain,
+                     black_point, highlight_start, shoulder_white, shoulder_span）
 
 用法：python gen_input.py   （需要 numpy；tag = local / wechat）
 """
@@ -49,8 +51,9 @@ for tag, params in [("local", ltm.params_for_profile("local")),
     with open(path, "wb") as f:
         f.write(struct.pack("<ii", W, H))
         f.write(struct.pack("<f", WHITE))
-        f.write(struct.pack("<6f", params.radius_frac, params.eps, params.range_compress,
-                            params.detail_gain, params.black_point, params.highlight_start))
+        f.write(struct.pack("<8f", params.radius_frac, params.eps, params.range_compress,
+                            params.detail_gain, params.black_point, params.highlight_start,
+                            params.shoulder_white, params.shoulder_span))
         f.write(hdr.tobytes())
         f.write(py_lum.tobytes())
     print(f"{tag}: {path}  hdr[{hdr.min():.3f},{hdr.max():.3f}] "

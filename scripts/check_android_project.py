@@ -96,9 +96,17 @@ def main() -> int:
 
     # 烘焙的逐像素封顶必须真的落地：v0.1.14 曾出现「加了 maxLift 字段但两个分支都没用」
     # 的静默退化，App 端因此持续过曝，而 Python 侧验收是绿的。
+    # 计数在剥掉字符串与注释之后进行（docs/07 §2-P1）：注释里提「liftCap」不应凑数。
     hb_src = (JAVA / "HdrBaker.kt").read_text(encoding="utf-8")
-    check("bake.lift_cap_applied", hb_src.count("liftCap") >= 3,
-          f"HdrBaker.kt 里 liftCap 出现 {hb_src.count('liftCap')} 次（应为 1 处定义 + 2 处使用）")
+    hb_code = re.sub(r'"""[\s\S]*?"""', '""', hb_src)
+    hb_code = re.sub(r"'(?:\\.|[^'\\])'", "'_'", hb_code)
+    hb_code = re.sub(r'"(?:\\.|[^"\\])*"', '""', hb_code)
+    hb_code = re.sub(r"//[^\n]*", "", hb_code)
+    hb_code = re.sub(r"/\*[\s\S]*?\*/", "", hb_code)
+    n_cap = hb_code.count("liftCap")
+    check("bake.lift_cap_applied", n_cap >= 3,
+          f"HdrBaker.kt 剥注释后 liftCap 出现 {n_cap} 次"
+          "（应为 1 处入参 + 1 处定义 + 2 处 minOf 使用 + 1 处 Stats 写入）")
 
     declared_types = {
         "UltraHdrNative", "UltraHdrPackager", "HdrSourceParser", "GainMapGeometry",
@@ -132,13 +140,22 @@ def main() -> int:
     else:
         check("cmake.depth", False, "未找到 third_party 相对路径")
 
-    # 8. Gradle 版本约束
+    # 8. Gradle 版本约束（AGP ↔ Gradle 官方兼容矩阵；docs/07 §2-P1：原
+    # 「gradle.agp_version」恒真已删，统一并入本项做真实判定）
     agp = re.search(r'com\.android\.application"\) version "([\d.]+)"', (AND / "build.gradle.kts").read_text(encoding="utf-8"))
     dist = re.search(r"gradle-([\d.]+)-bin\.zip", (AND / "gradle" / "wrapper" / "gradle-wrapper.properties").read_text(encoding="utf-8"))
     if agp and dist:
-        check("gradle.agp_version", True, f"AGP {agp.group(1)} + Gradle {dist.group(1)}（AGP 8.5 需 Gradle ≥ 8.7）")
-        check("gradle.agp_compat", float(dist.group(1).split(".")[0]) >= 8 and float(dist.group(1).split(".")[1]) >= 7,
-              "Gradle 8.7 满足 AGP 8.5 要求")
+        # AGP 最低 Gradle 要求（developer.android.com/build/releases/gradle-plugin）
+        AGP_TO_GRADLE = {
+            (8, 7): (9, 0), (8, 6): (8, 7), (8, 5): (8, 7), (8, 4): (8, 6),
+            (8, 3): (8, 4), (8, 2): (8, 2), (8, 1): (8, 0), (8, 0): (8, 0),
+        }
+        a = tuple(int(x) for x in agp.group(1).split(".")[:2])
+        g = tuple(int(x) for x in dist.group(1).split(".")[:2])
+        need = AGP_TO_GRADLE.get(a, (8, 7))
+        check("gradle.agp_compat", g >= need,
+              f"AGP {agp.group(1)} + Gradle {dist.group(1)}"
+              f"（AGP {agp.group(1)} 需 Gradle ≥ {'.'.join(map(str, need))}）")
 
     # 9. compileSdk / minSdk 合理性
     app_gradle = (AND / "app" / "build.gradle.kts").read_text(encoding="utf-8")

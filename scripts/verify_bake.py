@@ -8,7 +8,11 @@
 2. **静态自检**：`check_android_project.py`（含 `bake.lift_cap_applied` —— 防止
    「只加字段没落地」再次发生）。
 3. **回归**：`python -m unittest discover -s tests`。
-4. **观感验收**：`tests/acceptance/accept.py` 的 6 个客观指标，跑真机样例 + 合成样例。
+4. **观感验收**：`tests/acceptance/accept.py` 的客观指标（亮度/纯白/暗部/SSIM/
+   饱和度 + 高光层次下限），跑真机样例 + 合成样例，strength 走 0.40/0.70 矩阵。
+5. **三层 Kotlin 对照**：像素对照（HdrBaker/LocalToneMapping）、grid 重封对照、
+   JVM 封装对照（UltraHdrPackager/MetadataValidator/HeifInspector/HdrSourceParser
+   首次被执行，docs/07 §3-L1）、LTM 双实现对照（tests/ltm_parity）。
 
 用法::
 
@@ -16,7 +20,9 @@
     python scripts/verify_bake.py --no-pull        # 只用已拉过的样例
     python scripts/verify_bake.py --samples a.jpg b.jpg
 
-退出码：0 全过 / 1 有失败 / 2 环境或样例缺失。
+步骤状态三态（docs/07 §2-1/2-2）：PASS / FAIL / SKIP（缺工具）。
+汇总出现 SKIP 时结论不允许写「全部通过」；任何步骤用例数为 0 由子脚本以
+退出码 3 上报，判 FAIL。退出码：0 全过（可含 SKIP）/ 1 有 FAIL / 2 环境或样例缺失。
 """
 
 from __future__ import annotations
@@ -98,44 +104,119 @@ def existing_samples() -> list[str]:
             if n.lower().endswith((".jpg", ".jpeg"))]
 
 
-def run_step(title: str, cmd: list[str]) -> bool:
+def run_step(title: str, cmd: list[str]) -> str:
     print("\n" + "=" * 72)
     print(f"== {title}")
     print("=" * 72)
     r = subprocess.run(cmd, cwd=ROOT, env=_env())
     ok = r.returncode == 0
     print(f"-- {title}: {'OK' if ok else 'FAILED'}（exit={r.returncode}）")
-    return ok
+    return "pass" if ok else "fail"
 
 
-def run_step_optional(title: str, cmd: list[str]) -> bool:
-    """跑一个步骤；退出码 2 视为「环境缺失，跳过」，不计为失败。"""
+def run_step_optional(title: str, cmd: list[str]) -> str:
+    """三态：0=PASS、2=工具缺失（SKIP）、其余=FAIL（docs/07 §2-1/2-2）。"""
     print("\n" + "=" * 72)
     print(f"== {title}")
     print("=" * 72)
     r = subprocess.run(cmd, cwd=ROOT, env=_env())
     if r.returncode == 2:
         print(f"-- {title}: 跳过（缺环境）")
-        return True
-    print(f"-- {title}: {'OK' if r.returncode == 0 else 'FAILED'}")
-    return r.returncode == 0
+        return "skip"
+    if r.returncode == 0:
+        print(f"-- {title}: OK")
+        return "pass"
+    print(f"-- {title}: FAILED（exit={r.returncode}）")
+    return "fail"
 
 
-def run_android_parity(samples: list[str], strength: float) -> bool:
+def find_git_bash() -> str | None:
+    """Windows 上跑 .sh 必须用 Git 的 bash（系统 bash 是 WSL 存根，见 HANDOVER §5.1）。"""
+    cand = [
+        os.environ.get("GIT_BASH", ""),
+        r"C:/Program Files/Git/bin/bash.exe",
+        r"C:/Program Files (x86)/Git/bin/bash.exe",
+        "bash",
+    ]
+    for c in cand:
+        if not c:
+            continue
+        if os.sep in c or "/" in c:
+            if os.path.isfile(c):
+                return c
+        else:
+            from shutil import which
+            if which(c):
+                return c
+    return None
+
+
+def run_ltm_parity() -> str:
+    """LocalToneMapping 双实现对照（tests/ltm_parity/run_parity.sh，docs/07 §2-6）。
+
+    退出码三态：0=PASS，2=缺 kotlinc（SKIP），其余=FAIL。
+    """
+    script = os.path.join(ROOT, "tests", "ltm_parity", "run_parity.sh")
+    if not os.path.isfile(script):
+        print("-- 跳过：没有 tests/ltm_parity/run_parity.sh")
+        return "skip"
+    bash = find_git_bash() if os.name == "nt" else shutil.which("bash")
+    if not bash:
+        print("-- 跳过：没有可用的 bash（Windows 需 Git Bash：C:/Program Files/Git/bin/bash.exe）")
+        return "skip"
+    env = _env()
+    print("\n" + "=" * 72)
+    print("== LTM 双实现对照 run_parity.sh")
+    print("=" * 72)
+    r = subprocess.run([bash, script], cwd=ROOT, env=env)
+    if r.returncode == 2:
+        print("-- LTM 双实现对照: 跳过（缺 kotlinc，设 KOTLINC=<path> 后可启用）")
+        return "skip"
+    if r.returncode == 0:
+        print("-- LTM 双实现对照: OK")
+        return "pass"
+    print(f"-- LTM 双实现对照: FAILED（exit={r.returncode}）")
+    return "fail"
+
+
+def run_android_parity(samples: list[str], strength: float) -> str:
     """在本机执行真实的 Kotlin HdrBaker，与 Python 逐像素比对。
 
-    缺 kotlinc 时按「跳过」处理（返回 True），不把环境缺失算成回归失败。
+    三态（docs/07 §2-1）：0=PASS，2=缺 kotlinc（SKIP），1/3=FAIL。
     """
     script = os.path.join(ROOT, "tests", "android_parity", "run_parity.py")
     if not os.path.isfile(script):
         print("-- 跳过：没有 tests/android_parity/run_parity.py")
-        return True
+        return "skip"
     cmd = [sys.executable, script, "--samples", *samples, "--strength", str(strength)]
     r = subprocess.run(cmd, cwd=ROOT, env=_env())
     if r.returncode == 2:
         print("-- 跳过：没有 kotlinc（设 KOTLINC=<path> 后可启用 Kotlin 像素对照）")
-        return True
-    return r.returncode == 0
+        return "skip"
+    if r.returncode == 0:
+        return "pass"
+    print(f"-- Kotlin 像素对照: FAILED（exit={r.returncode}）")
+    return "fail"
+
+
+def run_jvm_parity() -> str:
+    """L1 层：UltraHdrPackager/MetadataValidator/HeifInspector/HdrSourceParser JVM 真跑。
+
+    docs/07 §3：这四个模块此前从未被执行过，而封装器与自检器决定用户手里那个
+    文件能不能被系统认成 HDR。三态：0=PASS，2=缺 kotlinc/JDK（SKIP），其余=FAIL。
+    """
+    script = os.path.join(ROOT, "tests", "android_parity", "run_jvm_parity.py")
+    if not os.path.isfile(script):
+        print("-- 跳过：没有 tests/android_parity/run_jvm_parity.py")
+        return "skip"
+    r = subprocess.run([sys.executable, script], cwd=ROOT, env=_env())
+    if r.returncode == 2:
+        print("-- 跳过：缺 kotlinc/JDK（设 KOTLINC 与 JAVA_HOME 后可启用 JVM 封装对照）")
+        return "skip"
+    if r.returncode == 0:
+        return "pass"
+    print(f"-- Kotlin JVM 封装对照: FAILED（exit={r.returncode}）")
+    return "fail"
 
 
 def build_and_push() -> bool:
@@ -185,7 +266,7 @@ def build_and_push() -> bool:
 
 def run_acceptance(samples: list[str], strength: float) -> bool:
     print("\n" + "=" * 72)
-    print("== 观感验收（6 个客观指标）")
+    print("== 观感验收（客观指标，含层次下限）")
     print("=" * 72)
     sys.path.insert(0, os.path.join(ROOT, "src", "python"))
     sys.path.insert(0, os.path.join(ROOT, "tests", "acceptance"))
@@ -193,8 +274,8 @@ def run_acceptance(samples: list[str], strength: float) -> bool:
     import accept  # noqa: E402  tests/acceptance/accept.py
 
     if strength != 0.40:
-        # 验收脚本内部硬编码 0.40（与 docs/04 定档一致）；这里只提示，不改语义
-        print(f"[warn] 验收固定用 strength=0.40，忽略传入的 {strength:.2f}")
+        # 验收内部跑 (0.40, 0.70) 矩阵（docs/07 §2-4）；此处参数仅提示，不改语义
+        print(f"[warn] 验收固定跑 strength (0.40, 0.70) 矩阵，忽略传入的 {strength:.2f}")
     rc = accept.run(samples, as_json=False, update=False)
     print(f"-- 观感验收: {'OK' if rc == 0 else 'FAILED'}")
     return rc == 0
@@ -239,7 +320,7 @@ def main() -> int:
     for p in samples:
         print(f"  · {os.path.basename(p)}  {os.path.getsize(p) / 1048576:.1f} MB")
 
-    results: list[tuple[str, bool]] = []
+    results: list[tuple[str, str]] = []  # (步骤名, "pass"|"skip"|"fail")
     results.append(("静态自检",
                     run_step("静态自检 check_android_project.py",
                              [sys.executable, os.path.join(ROOT, "scripts", "check_android_project.py")])))
@@ -249,28 +330,37 @@ def main() -> int:
     results.append(("回归测试",
                     run_step("回归测试 unittest discover",
                              [sys.executable, "-m", "unittest", "discover", "-s", os.path.join(ROOT, "tests")])))
-    results.append(("观感验收", run_acceptance(samples, args.strength)))
+    results.append(("观感验收", run_acceptance(samples, args.strength)
+                    and "pass" or "fail"))
     results.append(("Kotlin 像素对照", run_android_parity(samples, args.strength)))
     results.append(("Kotlin grid 对照", run_step_optional(
         "Kotlin grid 重封对照",
         [sys.executable, os.path.join(ROOT, "tests", "android_parity", "run_grid_parity.py")],
     )))
+    results.append(("Kotlin JVM 封装对照", run_jvm_parity()))
+    results.append(("LTM 双实现对照", run_ltm_parity()))
     if args.apk:
-        # 门禁：任何一项本地自检没过，就不构建、不推送 —— 打包必须站在全绿之上
-        if any(not ok for _, ok in results):
+        # 门禁：任何一项本地自检 FAIL 就不构建、不推送 —— 打包必须站在全绿之上
+        if any(st == "fail" for _, st in results):
             print("\n[apk] 跳过构建：本地自检未全部通过（先修绿再打包）")
-            results.append(("构建推送", False))
+            results.append(("构建推送", "fail"))
         else:
-            results.append(("构建推送", build_and_push()))
+            results.append(("构建推送", build_and_push() and "pass" or "fail"))
 
     print("\n" + "=" * 72)
-    for name, ok in results:
-        print(f"{'PASS' if ok else 'FAIL'}  {name}")
-    failed = [n for n, ok in results if not ok]
+    for name, st in results:
+        label = {"pass": "PASS", "skip": "SKIP", "fail": "FAIL"}[st]
+        print(f"{label}  {name}")
+    failed = [n for n, st in results if st == "fail"]
+    skipped = [n for n, st in results if st == "skip"]
     print("=" * 72)
     if failed:
         print(f"结论：未通过（{', '.join(failed)}）")
         return 1
+    if skipped:
+        print(f"结论：通过（含 {len(skipped)} 步跳过：{', '.join(skipped)}）——"
+              "不是全部通过，补齐缺失工具后需重跑核对")
+        return 0
     print("结论：全部通过。渲染结果已由客观指标验收，不需要人工看图。")
     return 0
 

@@ -17,12 +17,14 @@ App 端照样过曝」（`maxLift` 只加字段没落地）。只有真把 Kotli
     python tests/android_parity/run_parity.py                 # 用 out/visual/samples
     python tests/android_parity/run_parity.py --rebuild       # 强制重编 jar
     python tests/android_parity/run_parity.py --samples a.jpg
-退出码：0 通过 / 1 数值超阈值 / 2 环境缺失（无 kotlinc 或样例）。
+退出码（三态，docs/07 §2-1）：0 一致 / 1 数值超阈值或比对失败（FAIL） /
+2 工具缺失（无 kotlinc 或样例，SKIP）/ 3 编译失败或一个用例都没比对上（FAIL）。
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import io
 import os
 import shutil
@@ -62,7 +64,7 @@ def find_kotlinc() -> str | None:
         os.path.expanduser("~/.workbuddy/binaries/kotlinc/kotlinc/bin/kotlinc"),
         "kotlinc",
     ]
-    for c in cand:
+    for i, c in enumerate(cand):
         if not c:
             continue
         if os.sep in c or "/" in c:
@@ -70,6 +72,11 @@ def find_kotlinc() -> str | None:
                 return c
         elif shutil.which(c):
             return c
+        if i == 0 and os.environ.get("KOTLINC"):
+            # 显式指定的 KOTLINC 无效时不静默回落：否则门禁永远用另一个编译器，
+            # 用户以为在验证的环境和实际跑的不是同一个
+            print(f"[warn] KOTLINC={c} 不存在，且不再回落默认路径 → 按工具缺失处理")
+            return None
     return None
 
 
@@ -85,10 +92,38 @@ def find_java() -> str:
     return "java"
 
 
+def _src_fingerprint() -> str:
+    """参与编译的源码树 sha256（文件名+内容依次喂入）。
+
+    jar 复用不能只看 mtime：git checkout / 换分支后 mtime 可能比 jar 新也可能旧，
+    曾有对着旧 Kotlin 比对的风险（docs/07 §2-7）。哈希不一致就强制重编。
+    """
+    h = hashlib.sha256()
+    for p in SRC:
+        with open(p, "rb") as f:
+            h.update(os.path.basename(p).encode("utf-8"))
+            h.update(b"\0")
+            h.update(f.read())
+    return h.hexdigest()
+
+
+SIDECAR = JAR + ".sha256"
+
+
+def _read_sidecar() -> str:
+    try:
+        with open(SIDECAR, encoding="utf-8") as f:
+            return f.read().strip()
+    except OSError:
+        return ""
+
+
 def build_jar(kotlinc: str, rebuild: bool) -> bool:
-    if os.path.isfile(JAR) and not rebuild and \
-            os.path.getmtime(JAR) > max(os.path.getmtime(p) for p in SRC):
-        return True
+    if os.path.isfile(JAR) and not rebuild:
+        want = _src_fingerprint()
+        if _read_sidecar() == want:
+            return True
+        print("[build] 源码树哈希与侧车不符（git checkout / 换机器），强制重编")
     os.makedirs(os.path.dirname(JAR), exist_ok=True)
     print(f"[build] kotlinc → {JAR}")
     env = dict(os.environ)
@@ -99,6 +134,8 @@ def build_jar(kotlinc: str, rebuild: bool) -> bool:
     if r.returncode != 0:
         print("[build] 失败：\n" + (r.stderr or r.stdout)[-2000:])
         return False
+    with open(SIDECAR, "w", encoding="utf-8") as f:
+        f.write(_src_fingerprint())
     return True
 
 
@@ -185,7 +222,7 @@ def main() -> int:
         print("没有 kotlinc：装一个，或设 KOTLINC=<path>")
         return 2
     if not build_jar(kotlinc, args.rebuild):
-        return 2
+        return 3
 
     samples = args.samples or ([os.path.join(SAMPLES_DIR, n) for n in sorted(os.listdir(SAMPLES_DIR))
                                 if n.lower().endswith(".jpg")] if os.path.isdir(SAMPLES_DIR) else [])
@@ -198,6 +235,7 @@ def main() -> int:
     print(f"样例 {len(samples)} 个，profiles={args.profiles}，strength={args.strength}")
     print(f"{'用例':<38}{'均值差':>8}{'P99':>6}{'最大':>6}  结论")
     fails = 0
+    executed = 0
     for path in samples:
         for profile in args.profiles:
             m, ok = run_case(java, path, profile, args.strength, args.long_edge)
@@ -205,6 +243,7 @@ def main() -> int:
             if "skip" in m:
                 print(f"{name:<38}{'-':>8}{'-':>6}{'-':>6}  SKIP（{m['skip']}）")
                 continue
+            executed += 1
             if "error" in m:
                 print(f"{name:<38}{'-':>8}{'-':>6}{'-':>6}  ERROR {m['error'][:60]}")
                 fails += 1
@@ -215,6 +254,10 @@ def main() -> int:
             fails += 0 if ok else 1
 
     print(f"\n阈值: 均值≤{MEAN_MAX} P99≤{P99_MAX} 最大≤{MAX_MAX}")
+    if executed == 0:
+        # 一个用例都没比对上（全是 SKIP）却报「全部一致」就是假绿（docs/07 §2-2）
+        print("结论: 用例数为 0 —— 没有完成任何逐像素对照，判 FAIL")
+        return 3
     print("结论:", "全部一致" if fails == 0 else f"{fails} 例超阈值")
     return 0 if fails == 0 else 1
 

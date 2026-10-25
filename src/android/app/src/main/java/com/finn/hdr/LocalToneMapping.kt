@@ -23,16 +23,25 @@ import kotlin.math.min
  * out    = hdr * (L' / lum)                          // 按亮度比例缩放 RGB，保色相
  * ```
  *
- * 两个容易写错的点（Python 侧都踩过，移植时逐条对齐）：
+ * 三个容易写错的点（Python 侧都踩过，移植时逐条对齐）：
  *  1. 高光软膝必须收敛到 0（白点）：k + s*(1 - e^(-(x-k)/s))，符号写反会把
  *     高光压得比中间调还黑；
  *  2. 顺序必须是「先 base 收缩、后压高光」。反序会让被压缩的高光被 rangeCompress
- *     再次提起，导致白点漂移。
+ *     再次提起，导致白点漂移；
+ *  3. 双斜率肩（2026-10-25 替代指数软膝）：指数软膝把所有高光收敛到同一渐近线，
+ *     叠加 0.96 天花板后实测把 1.5~2.4× 白点全部拍平在 [0.95, 0.96]。新结构：
+ *     SDR 带 [highlightStart..1.0] 线性压到 shoulderWhite（0.93）让出空间，
+ *     HDR 超白带 [0..shoulderSpan] 小斜率线性延伸到 SHOULDER_TARGET（0.96），
+ *     更亮的像素由 ceiling 兜底；ceiling 随之放开到 1.0（sRGB 250→255 是
+ *     「比白更亮」的唯一去处，纯白由验收 clip_delta 阈值看守）。
  *
  * guided filter 用可分离 box blur（积分图等价滑动窗口）实现，O(1)/像素；
  * 单帧 2048x1536 预计 200-400 ms（中端 ARM）。
  */
 object LocalToneMapping {
+
+    /** 双斜率肩 HDR 段的名义落点（线性亮度），与 Python 侧 _SHOULDER_TARGET 一致。 */
+    private const val SHOULDER_TARGET = 0.96f
 
     /** 局部色调映射参数（与 Python LtmParams 同名字段、同默认值）。 */
     data class Params(
@@ -55,6 +64,17 @@ object LocalToneMapping {
         val blackPoint: Float = 0.0020f,
         /** 高光软膝起点（线性亮度，1.0 = SDR 白点），1.0 = 不压 */
         val highlightStart: Float = 0.78f,
+        /**
+         * 双斜率肩：SDR 带 [highlightStart..1.0] 的线性映射目标（线性亮度）。
+         * 压到 0.93 给 HDR 超白增量让出 [0.93..1.0]；实测 0.90/0.95 时高光
+         * spread 回落，0.93 最优（sweep2，2026-10-25）。
+         */
+        val shoulderWhite: Float = 0.93f,
+        /**
+         * 双斜率肩：HDR 超白带覆盖范围（log2 域，相对白点）。实测峰值
+         * lum≈2.4× 白点（x≈1.26），取 1.3 全覆盖。
+         */
+        val shoulderSpan: Float = 1.3f,
     )
 
     /** 按使用场景返回参数；null 表示不启用 LTM（保持纯全局映射的旧行为）。 */
@@ -68,6 +88,8 @@ object LocalToneMapping {
             detailGain = 1.12f,
             blackPoint = 0.0025f,
             highlightStart = 0.72f,
+            shoulderWhite = 0.93f,
+            shoulderSpan = 1.3f,
         )
         "faithful" -> Params(
             // 保真档：几乎不做 base 收缩（0.97 ≈ 不抬暗部），只保留少量局部对比。
@@ -77,6 +99,8 @@ object LocalToneMapping {
             rangeCompress = 0.97f,
             detailGain = 1.08f,
             highlightStart = 0.70f,
+            shoulderWhite = 0.93f,
+            shoulderSpan = 1.3f,
         )
         else -> Params() // local：观感优先
     }
@@ -112,8 +136,12 @@ object LocalToneMapping {
         h: Int,
         white: Float,
         params: Params,
-        /** 高光上限（线性）。不取 1.0：顶到 1.0 会让大片高光变纯白、丢层次。 */
-        ceiling: Float = 0.96f,
+        /**
+         * 高光硬钳制（线性）。1.0 = 允许顶到纯白 —— 配合双斜率肩，sRGB 250→255 是
+         * 「比白更亮」的唯一去处；纯白占比由验收 clip_delta（≤+1 个百分点）看守。
+         * 0.96 及以下是旧全局映射时代的保守值，会把肩曲线让出的高光增量又拍平。
+         */
+        ceiling: Float = 1.0f,
     ): Result {
         val n = w * h
         val invWhite = 1f / max(white, 1e-6f)
@@ -137,7 +165,8 @@ object LocalToneMapping {
         var shadowCount = 0
         i = 0
         while (i < n) {
-            val b = compressHighlights(base[i] * params.rangeCompress, params.highlightStart)
+            val b = compressHighlights(base[i] * params.rangeCompress, params.highlightStart,
+                                       params.shoulderWhite, params.shoulderSpan)
             val o = min(b + (x[i] - base[i]) * params.detailGain, ceilingLog)
             xOut[i] = o
             if (x[i] < -4.0) { // 暗部统计：平均提升倍数
@@ -265,18 +294,30 @@ object LocalToneMapping {
     }
 
     /**
-     * log2 域高光软膝：start 以下不动作，以上单调收敛到 0（= 白点）。
+     * log2 域双斜率高光肩（2026-10-25 替代指数软膝，与 Python _compress_highlights 逐行对齐）。
      *
-     * x_out = k + s*(1 - e^(-(x-k)/s))，k = log2(start)（负值），s = -k。
-     * 在 x = k 处一阶导连续，不会出现可见折线接缝。
+     * 指数软膝（k + s*(1 - e^(-(x-k)/s))）把所有高光收敛到同一渐近线 0，叠加 0.96
+     * 天花板后实测把 1.5~2.4× 白点全部拍平在 [0.95, 0.96]。双斜率结构
+     * （x = log2(L/white)，0 = SDR 白点）：
+     *   x <= 0（SDR 带 [start..1.0]）：k + (x−k)·a1 线性压到 log2(shoulderWhite)，
+     *        a1 = 1 − log2(shoulderWhite)/k < 1（shoulderWhite 须 < 1.0，否则非单调）；
+     *   x >  0（HDR 超白带）        ：log2(shoulderWhite) + x·a2 小斜率线性延伸，
+     *        a2 = (log2(SHOULDER_TARGET) − log2(shoulderWhite)) / span，
+     *        在 x = span 处到达 SHOULDER_TARGET。
+     * 两段在 x = 0 处函数值连续；x = k 以下同样走 below 段（斜率 a1 的线性延伸，
+     * 与 Python 侧 np.where(x > 0, above, below) 语义一致）。
      */
-    private fun compressHighlights(x: Float, startLinear: Float): Float {
-        val k = log2(max(startLinear, 1e-4f))
-        if (k >= 0f) return min(x, 0f)
-        if (x <= k) return x
-        val s = -k
-        val over = x - k
-        return k + s * (1f - exp(-over / s))
+    private fun compressHighlights(
+        x: Float,
+        startLinear: Float,
+        shoulderWhite: Float,
+        shoulderSpan: Float,
+    ): Float {
+        val k = log2(max(startLinear, 1e-4f))   // 负值（例如 0.78 → -0.358）
+        val y0 = log2(max(shoulderWhite, 0.5f))
+        val a1 = if (k < 0f) 1f - y0 / k else 1f
+        val a2 = (log2(SHOULDER_TARGET) - y0) / max(shoulderSpan, 1e-3f)
+        return if (x > 0f) y0 + x * a2 else k + (x - k) * a1
     }
 
     private fun pow2(x: Float): Float = Math.pow(2.0, x.toDouble()).toFloat()

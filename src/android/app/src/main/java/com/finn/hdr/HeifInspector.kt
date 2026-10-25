@@ -218,13 +218,16 @@ object HeifInspector {
             if (iref != null) {
                 try {
                     // iref 是 FullBox：4 字节 version+flags，之后是若干 reference box。
-                    // **ID 宽度由 iref 自身的 version 决定**，不是每个 reference box 的第一字节
-                    // （那是 from_item_ID 的高字节——按子 box 取 version 会偶发把 ID 读错）。
+                    // **ID 宽度由 iref 自身的 version 决定**。
+                    // reference box 的 payload **直接就是 from_item_ID**（无子层 version/flags）：
+                    // 真机华为 HEIC 与 Apple HEIC 实证——cdsc 载荷恰为 6B=from(2)+count(2)+to(2)，
+                    // 若按 FullBox 多跳 4 字节，dimg #39->30 块 tile 会错读成 #3->28 块
+                    // （2026-10-25 由 run_jvm_parity 与字节级探针定位，此前 +4 是错的）。
                     val irefVer = if (iref.payloadStart < b.size) b[iref.payloadStart].toInt() and 0xFF else 0
                     val idBytes = if (irefVer == 0) 2 else 4
                     for (r in child(b, iref, 4)) {
                         val endR = minOf(r.start + r.size, b.size)
-                        var q = r.payloadStart + 4
+                        var q = r.payloadStart
                         if (q + idBytes + 2 > endR) continue
                         val from = readId(b, q, idBytes)
                         q += idBytes

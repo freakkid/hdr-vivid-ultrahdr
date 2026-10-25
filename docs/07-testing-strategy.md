@@ -95,6 +95,85 @@
 
 ## 7. 执行顺序
 
+> **落实记录（2026-10-25）**
+>
+> - §2-3 的下限已补：`accept.py` 新增 `hl_spread_min=0.40`、`hl_hf_min=0.65`、
+>   `hf_all_min=0.90`（「层次少」量化结果与依据见 `tests/acceptance/README.md`
+>   「层次实测」节；下限钉在出货档实测最低值，守现状，调参提升后须上调）。
+>   本条目中 `shadow_lift ≥0.90` / `mean_lift ≥1.05` 两个下限尚未加（属「HDR 未生效」
+>   防线，待做）。
+> - **同日晚：「层次少」根因修复，下限随之上调**。根因：样本高光 1.5~2.4× 白点被
+>   LTM 指数软膝 + 0.96 天花板全部拍平在 [0.95, 0.96]（spread 只剩源的 8%，
+>   输出恒为 0.417×源）。修复：LTM 换双斜率肩（SDR 带线性压到 0.93、HDR 带小斜率
+>   延伸到 0.96、ceiling 放开到 1.0），`ltm.py` 与 `LocalToneMapping.kt` 逐行对齐。
+>   复测后下限改为 `hl_spread_min=0.45` / `hl_hf_min=0.75` / `hf_all_min=0.95`，
+>   均落在旧算法实测值（0.417 / 0.690 / 0.984）之下——换回旧肩会被门禁拦住。
+>   依据与复测数据见 `tests/acceptance/README.md`「双斜率肩上线后复测」。
+> - §2-4 的 strength 矩阵已落地：验收固定跑 (0.40, 0.70)（`ACCEPT_STRENGTHS`），
+>   此前只验 0.40 意味着产品默认档从未被验收。
+> - 层次下限只对出货 profile（local/wechat/faithful）生效，`off`（A/B 对照）不参与，
+>   理由见 README「边界约定」。
+> - §2-1/2-2 退出码三态已落地：`run_parity.py`/`run_grid_parity.py`/`run_jvm_parity.py`
+>   0=PASS / 2=工具缺失（SKIP）/ 3=编译或断言失败（FAIL）；`verify_bake.py` 汇总区分
+>   三态，有 SKIP 时结论改写「通过（含 N 步跳过）」，不许再写「全部通过」。
+> - §2-5 自证已消：`bake.to_srgb` 有 ICC 但转换失败时 raise；验收对照基准改用
+>   独立 `ImageCms` 链路（`accept._sdr_baseline`），与被测代码零共享。
+> - §2-6 已接入：`ltm_parity/run_parity.sh` 缺 kotlinc 改 exit 2，并作为门禁步骤
+>   运行（Windows 探测 Scripts/python.exe 与 Git Bash）。实测 float 级 max_abs≈3.6e-05。
+> - §2-7 已落地：`run_parity.py`/`run_grid_parity.py` 的 jar 缓存改用源码树 sha256
+>   侧车文件，git checkout 后强制重编。
+> - §2-P1 次级项已修：`check_android_project.py` 删恒真的 `gradle.agp_version`，并入
+>   AGP↔Gradle 真实兼容矩阵判定；`liftCap` 计数改为剥字符串/注释后统计。
+> - **§3-L1 JVM 化已提前完成（P2 项）**：`run_jvm_parity.py` 把 `UltraHdrPackager`/
+>   `MetadataValidator`/`HeifInspector`/`HdrSourceParser` 四个从未执行的模块在 JVM
+>   真跑（仅 1 个 `android.util.Base64` 桩），10 用例 / 101 断言，含「封装→自检→
+>   Python 互检→双端回解析」闭环；已作为门禁步骤「Kotlin JVM 封装对照」接入。
+> - **门禁顺带揪出并修复一个生产 bug**：`HeifInspector.kt` iref 解析起点多跳 4 字节
+>   （`payloadStart + 4`）。字节级实证（7 张真机华为 HEIC + Apple 样张，cdsc 载荷恰
+>   6B=from(2)+count(2)+to(2)）：reference box 不带 version/flags，from_item_ID 紧跟
+>   8 字节 box 头。修复前 App 日志的 dimg 关系整体错位（如 dimg #39→30 块 tile 被读成
+>   #3→28 块）；`HeifGridRewriter.parseIref` 无此问题（真机重封可用与它一致）。
+>   修复后 `run_jvm_parity` 的 iref 断言已升级为逐条严格比对。
+>
+> **落实记录（2026-10-25 下午，假绿点 1/2/5/6/7）**
+>
+> - **§2-1 编译失败 ≠ 缺环境**：`run_parity.py` / `run_grid_parity.py` 改为三态
+>   退出码 —— 0=PASS、1=数值超阈值（FAIL）、2=工具缺失（SKIP）、3=编译/运行失败
+>   （FAIL）。验证方式：把 `run_parity.py` 复制到临时目录、注入语法错误后编译，
+>   退出码为 3，`verify_bake.py` 汇总判 FAIL。
+> - **§2-2 汇总三态**：`verify_bake.py` 的 `run_step_optional` / `run_android_parity`
+>   / 新接入的 `run_ltm_parity` 均返回 PASS/SKIP/FAIL；汇总逐项打 PASS/SKIP/FAIL，
+>   存在 SKIP 时结论写「通过（含 N 步跳过：…）」而非「全部通过」；任何步骤
+>   「用例数为 0」（子脚本全 SKIP、没比对上一个样本）以退出码 3 上报判 FAIL
+>   （`run_parity.py` 里已实现该计数）。验证方式：把 `KOTLINC` 指向不存在的
+>   路径跑 `verify_bake.py --no-pull`，像素/grid/LTM 三步显示 SKIP，结论不再是
+>   「全部通过」。
+> - **§2-5 to_srgb 自证**：`bake.to_srgb` 有 ICC 但 ImageCms 转换失败时改为
+>   raise（无 ICC / 本身 sRGB 的正常路径不变）；`accept.py` 的对照基准不再调用
+>   `bake.to_srgb`，改用独立的 `ImageCms.profileToProfile`（自己读源图 ICC →
+>   sRGB），与被测实现零共享。验证方式：全部真实样本（`out/visual/samples/*.jpg`，
+>   3 张）跑完验收无回归。
+> - **§2-6 ltm_parity 接入门禁**：`run_parity.sh` 缺 kotlinc 由 `exit 0` 改为
+>   `exit 2`（SKIP），编译失败 `exit 1`（FAIL）；`verify_bake.py` 新增
+>   `run_ltm_parity` 可选步骤，Windows 上用 Git Bash
+>   （`C:/Program Files/Git/bin/bash.exe`）调用。
+>   同时修了 HANDOVER §5.1 的已知问题：解释器探测补上 Windows venv 路径
+>   `…/envs/default/Scripts/python.exe`（此前只探测 POSIX 的 `bin/python`，
+>   Windows 上回落到无 numpy 的系统 python3），kotlinc/java 也补了
+>   `.bat` 与 workbuddy 固定目录探测。
+> - **§2-7 jar 侧车哈希**：`run_parity.py` / `run_grid_parity.py` 的 jar 缓存由
+>   mtime 判断改为「参与编译源码树（文件名+内容）sha256 侧车文件」
+>   （`out/kotlin_parity/*.jar.sha256`），哈希不一致强制重编 —— git checkout /
+>   换分支后不再对着旧 Kotlin 比对。
+> - **P1 恒真项**：`check_android_project.py` 的 `gradle.agp_version` 确认恒真
+>   （`check(..., True, ...)`），已删除并并入 `gradle.agp_compat`，按 AGP↔Gradle
+>   官方兼容矩阵（8.7→9.0、8.5/8.6→8.7、…）做真实判定；`bake.lift_cap_applied`
+>   改为剥掉字符串/注释后统计 `liftCap`，注释凑数不再算数。`liftCap` 计数维持
+>   「≥3 次存在性」口径（剥注释后实测 6 次），「两处 `minOf(...)` 精确匹配」
+>   因括号配平的正则剥离已够脆弱、收益有限，暂留待与 JVM 化（§3 L1）一并做。
+> - 括号配平 ≠ 可编译（P1 第三条）未在本轮处理，属 `./gradlew compileDebugKotlin`
+>   门禁范畴。
+
 | 优先级 | 动作 | 成本 | 收益 |
 |---|---|---|---|
 | P0 | 退出码三态 + 汇总区分 SKIP + 用例数为 0 判 FAIL | 1–2h | 消灭"跳过即通过" |
