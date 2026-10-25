@@ -1,6 +1,6 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-25（v0.1.22：**修「烘焙图发灰」= 丢 Display P3 ICC**；提交/打包前强制本地自检；**测试策略调研见 `docs/07-testing-strategy.md`**）
+> 最后更新：2026-10-25（v0.1.23：**修「层次少」= LTM 双斜率肩 + ceiling 1.0**，层次下限随实测上调；提交/打包前强制本地自检；**测试策略调研见 `docs/07-testing-strategy.md`**）
 > 读这一篇就能接手，不需要回看聊天记录。**先看 §0 和 §10.2，这两处是这一晚的结论。**
 
 ---
@@ -10,7 +10,7 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG；**并**同时产出一张「HDR 效果已烘焙进像素」的普通 JPEG（微信/任何设备可见） |
-| 到哪一步了 | **真机全链路已跑通**（`docs/02` §2.9：真实华为样本，Python 独立校验 **20/20**）。烘焙算法 v3 + 4 档 profile + 双斜率肩；本机可真跑 Kotlin（`tests/android_parity/`）；一键自检 `scripts/verify_bake.py` 8 步全绿。**当前手机上是 0.1.22（未安装）**，「层次少」已修（双斜率肩，2026-10-25 晚），观感待用户最后一次确认 |
+| 到哪一步了 | **真机全链路已跑通**（`docs/02` §2.9：真实华为样本，Python 独立校验 **20/20**）。烘焙算法 v3 + 4 档 profile + 双斜率肩；本机可真跑 Kotlin（`tests/android_parity/`）；一键自检 `scripts/verify_bake.py` 8 步全绿。**0.1.23 已推送到手机（卓易通待安装）**，「层次少」已修（双斜率肩，2026-10-25 晚），观感待用户最后一次确认 |
 | 下一步唯一要做的事 | ① **改任何东西先跑 `python scripts/verify_bake.py`**（静态→两端常量→回归→观感验收 20/20→Kotlin 像素→grid→JVM 封装→LTM 双实现，缺 kotlinc/样例会标 SKIP）；② 装新包确认**「层次少」已修**（高光 spread 0.417→0.50+）；③ ceiling 1.0 是 v0.1.15 踩过坑的区域，装机后重点看高光是否再现「大片纯白」 |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:\DevEco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。随 HarmonyOS Command Line Tools 安装，**不在仓库里**，换机器需重装（§1.3-C）|
@@ -832,6 +832,7 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
 | **0.1.20** | **21** | 见 `git log` | 复审补漏：① 产物先落局部变量、gen 校验通过才提交字段（旧线程不会再把旧图写回）；② 导出开始即清空上一轮 `bakedFile/hdrFile`；③ 新增 `loadGen`，快速连续选图时作废前一次解析结果；④ 裁切率改为**按单通道**统计（亮度口径恒 0，是死指标） | 无界面变化；`裁切 x%` 数字开始有意义 |
 | **0.1.21** | **22** | 见 `git log` | 「导出原图」改存**原件**字节（此前系统转码成功时会导出转码后的 JPEG）；按钮文案改为「导出（长边 2048，超出才缩）」「导出原图（选位置，任何格式都可用）」 | 界面文案变化 |
 | **0.1.22** | **23** | 见 `git log` | **修「烘焙图比原图灰」**：源图 ICC 是 Display P3，此前丢掉 ICC 后系统按 sRGB 解释，实测平均饱和度 60.2 而正确值 69.0（-8.8 点）。现在两端都先转 sRGB 再烘焙（Python `to_srgb()` / Kotlin `inPreferredColorSpace=sRGB`） | 无界面变化；烘焙图色彩恢复正常 |
+| **0.1.23** | **24** | 见 `git log` | **修「层次少」**：根因是 LTM 指数软膝 + 0.96 天花板把高光全部拍平在 [0.95, 0.96]（hl_spread 恒定 0.417×源）。换成**双斜率肩**（SDR 带线性压到 `shoulder_white`=0.93，HDR 超白带小斜率延伸到 0.96）+ ceiling 0.96→1.0；`ltm.py` / `LocalToneMapping.kt` 逐行对齐；层次下限随实测上调（hl_spread 0.45 / hl_hf 0.75 / hf_all 0.95，旧算法实测值全部落在下限之下）。全门禁 8 步 PASS | 无界面变化；高光层次恢复（spread 0.417→0.50+），装机观感待人工确认 |
 
 ### 11.3 一眼判定手机上装的是哪版
 
