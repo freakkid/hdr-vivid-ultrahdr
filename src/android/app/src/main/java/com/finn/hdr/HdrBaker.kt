@@ -16,13 +16,22 @@ import java.util.Random
  *      log_boost = recovery × (max_log2 − min_log2) + min_log2
  *      gain = 2^(log_boost × strength)
  *   3. HDR = (SDR + offsetSdr) × gain − offsetHdr
- *   4. 色调映射：
- *      - profile=off   仅全局（sdr-white 锚定 + 高光软膝），旧行为
- *      - profile=local / wechat  全局 + [LocalToneMapping] 局部色调映射（观感优先）
+ *   4. 色调映射（两种目标模式，见 [targetModeForProfile]）：
+ *      - display（local / wechat，出货默认）：目标即「HDR 映射结果本身」，
+ *        按 strength 在 log 亮度域向 SDR 底图几何插值
+ *      - sdr（off / faithful，旧行为）：按 sdrLum 分流混合 + 增量缩放 + liftCap，
+ *        把结果锚回底图亮度，用于 A/B 对照与「不提亮」逃生阀
  *   5. S 曲线 + 饱和度补偿 —— **必须在 sRGB（感知）域做**。放在线性域会把
  *      0.5 以下亮度强力压向 0（线性 0.5 ≈ sRGB 188），暗部被钉死成纯黑，
  *      这是 Python 侧 P0-1 修过的 bug，Kotlin 侧同步修正。
  *   6. 三角分布抖动（固定种子）→ 8bit 量化，抑制平滑渐变 banding
+ *
+ * 第 4 步是成败关键。2026-10-25 深夜之前全链默认 sdr 锚定：验收指标全部对比
+ * SDR 底图，把烘焙图死死摁在平坦底图上 —— 实测中间调与底图只差 ±1 灰阶，
+ * 用户装机后观感是「灰灰的、没效果」。而用户眼睛的参照物是手机上的 HDR 显示
+ * （整体更亮、高光耀眼），两个目标根本不同。因此出货档（local/wechat）改用
+ * display 目标：让烘焙图真正带上 HDR 的亮度结构，验收基准也随之改为
+ * 「可见增强 + 自然护栏」（tests/acceptance/accept.py）。
  */
 object HdrBaker {
 
@@ -41,15 +50,19 @@ object HdrBaker {
         /**
          * 高光加权区间（线性亮度）。低于 blendStart 完全保持 SDR，高于 blendEnd 完全采信 HDR。
          *
-         * 为什么必须有：增益图在全图都有值（实测中位 86/255），直接乘会把**中间调一起提亮**，
-         * 而且数学上无法靠调 strength 消除（strength→0 只会连 HDR 一起没了）。
-         * 手机显示 HDR 时参考白仍对应 SDR 的 1.0，中间调观感与 SDR 一致，所以必须按亮度分流。
+         * **仅 sdr 锚定路径（off / faithful）使用**，见 [targetModeForProfile]。
+         * 出货档 local / wechat 已改用 display 目标（log 域几何插值），不再按亮度分流 ——
+         * 分流假设「手机显示 HDR 时中间调与 SDR 一致」，但用户的参照物是手机上更亮的
+         * HDR 显示效果，分流把 HDR 增量摁死后观感就是「灰灰的、没效果」。
          */
         val blendStart: Float = 0.35f,
         val blendEnd: Float = 0.90f,
         /**
          * 单像素相对源 SDR 的最大提亮倍数（安全垫，防止 LTM 把中高光推成大片接近白）。
          * 实测依据：192~223 这档被推 +8.5% 就能被肉眼察觉。
+         *
+         * **仅 sdr 锚定路径使用**；display 路径的目标天然 ≤1（LTM ceiling 钳制 +
+         * 几何插值 ≤ sdr^(1−strength)），不需要逐像素封顶。
          *
          * 注意：**它不负责「强度」**。strength 的可见性靠下面那条「增量按 strength 缩放」，
          * 因为色调映射会把 HDR 增量压掉，只靠增益乘 strength 时 0.3 与 1.0 的预览几乎一样。
@@ -64,8 +77,10 @@ object HdrBaker {
         val whitePoint: Float,
         val clippedRatio: Float,
         val maxBoost: Float,
-        /** 实际生效的提亮上限（faithful 1.05，其余 1.25） */
+        /** 实际生效的提亮上限（faithful 1.05，其余 1.25）。**仅 sdr 目标模式使用** */
         val liftCap: Float = 1f,
+        /** 本次生效的色调映射目标模式：display（出货档）/ sdr（off / faithful 旧行为） */
+        val targetMode: String = "sdr",
         /** 输出平均亮度 / 源 SDR 平均亮度 —— 用来一眼看出 strength 是否真的起作用 */
         val meanLift: Float = 1f,
         val profile: String = "off",
@@ -83,6 +98,48 @@ object HdrBaker {
         val v = i / 1023f
         if (v <= 0.0031308f) v * 12.92f
         else (1.055 * Math.pow(v.toDouble(), 1.0 / 2.4) - 0.055).toFloat()
+    }
+
+    /**
+     * profile → 色调映射目标模式。与 Python `bake.target_mode_for_profile` 同源同义。
+     *
+     * display = 显示导向：目标即 LTM/全局映射结果本身，按 strength 在 log 亮度域
+     *           向 SDR 底图几何插值（strength 0 → 等同底图，1 → 完整映射结果）。
+     *           local / wechat 走这条 —— 烘焙图要带的是手机上 HDR 显示的亮度结构，
+     *           不是平坦的 SDR 底图。
+     * sdr     = 底图锚定（旧行为）：按 sdrLum 分流混合 + 增量缩放 + liftCap。
+     *           off 是 A/B 对照旧行为，faithful 是「嫌亮」用户的不提亮逃生阀，
+     *           两档都明确承诺「不改变整体明暗」，必须留在旧路径。
+     */
+    fun targetModeForProfile(profile: String): String =
+        if (profile == "off" || profile == "faithful") "sdr" else "display"
+
+    /**
+     * 显示导向目标：log 亮度域把 SDR 底图按 amount 几何插值到 HDR 映射结果。
+     *
+     *     target = exp(ln sdr + amount × (ln mapped − ln sdr))
+     *
+     * 为什么用几何（log 域）插值而不是线性：
+     *  1. 亮度是乘性感知量。线性插值按绝对差值分配，暗部的 HDR 增量绝对值小、
+     *     会被摁死；几何插值按比例缩放，暗部也拿到成比例的提亮；
+     *  2. amount=0 精确回到底图亮度（strength 滑杆底端 = 无效果），
+     *     amount=1 精确等于映射结果 —— 两端行为可预期，滑杆语义即「HDR 剂量」；
+     *  3. 映射结果 ≤1（LTM ceiling 钳制），插值结果 ≤ sdr^(1−amount) ≤ 1，
+     *     天然不会过曝，不需要逐像素 liftCap。
+     *
+     * 纯黑像素（源亮度 ≤1e-6，即 sRGB 0）保持 0：LTM 的局部提亮会把纯黑邻域
+     * 一起抬起（夜模式式），几何插值会把它们保留成灰黑，这里显式摁回纯黑，
+     * 与 sdr 路径（smoothstep 在 0 处权重为 0，黑位不变）行为一致。
+     *
+     * 试过并否决：超白像素豁免收缩（直接采信映射结果）。实测 hl_spread 从 0.50
+     * 掉到 0.17~0.29 —— 豁免后输出全跟随肩部压缩区间（传递函数斜率仅 0.15），
+     * 底图锚定带来的源变化反而更多。几何插值本身已是高光区保层次的最优形式。
+     */
+    internal fun displayTarget(sdrLum: Float, mappedLum: Float, amount: Float): Float {
+        if (sdrLum <= 1e-6f) return 0f
+        val logSdr = Math.log(maxOf(sdrLum, 1e-6f).toDouble())
+        val logMapped = Math.log(maxOf(mappedLum, 1e-6f).toDouble())
+        return Math.exp(logSdr + amount.toDouble() * (logMapped - logSdr)).toFloat()
     }
 
     fun bake(
@@ -187,6 +244,9 @@ object HdrBaker {
         // strength 作用在「HDR 相对 SDR 的增量」上：不这么做的话，色调映射会把增益差异
         // 压平，0.30 与 1.00 的预览几乎一致（真机反馈「强度不生效」的根因）。
         val amount = opt.strength.coerceIn(0f, 1f)
+        // 目标模式：出货档走 display（几何插值，带 HDR 亮度结构），
+        // off/faithful 走 sdr（锚回底图，旧行为）。见 targetModeForProfile。
+        val useDisplayTarget = targetModeForProfile(opt.profile) == "display"
         if (ltmParams != null) {
             val ltmResult = LocalToneMapping.apply(hdr, lum, w, h, white, ltmParams)
             val mapped = ltmResult.out
@@ -200,13 +260,20 @@ object HdrBaker {
                 val mg = clamp01(mapped[i * 3 + 1])
                 val mb = clamp01(mapped[i * 3 + 2])
                 val ml = 0.2126f * mr + 0.7152f * mg + 0.0722f * mb
-                val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
-                val blended = sdrLum[i] * (1f - wgt) + ml * wgt
-                // 增量按 strength 缩放：0 → 完全等同源 SDR；1 → 完整 HDR 效果
-                val target = minOf(
-                    sdrLum[i] + (blended - sdrLum[i]) * amount,
-                    sdrLum[i] * liftCap,
-                )
+                val target: Float
+                if (useDisplayTarget) {
+                    // 出货档（local / wechat）：目标即 HDR 映射结果，按 strength 几何插值。
+                    // 不做 liftCap —— 几何插值结果天然 ≤ sdr^(1−amount) ≤ 1。
+                    target = displayTarget(sdrLum[i], ml, amount)
+                } else {
+                    val wgt = smoothstep(opt.blendStart, opt.blendEnd, sdrLum[i])
+                    val blended = sdrLum[i] * (1f - wgt) + ml * wgt
+                    // 增量按 strength 缩放：0 → 完全等同源 SDR；1 → 完整 HDR 效果
+                    target = minOf(
+                        sdrLum[i] + (blended - sdrLum[i]) * amount,
+                        sdrLum[i] * liftCap,
+                    )
+                }
                 val scale = if (ml > 1e-6f) target / ml else 0f
                 val rr = mr * scale
                 val gg = mg * scale
@@ -308,6 +375,7 @@ object HdrBaker {
             clippedRatio = clipped.toFloat() / n,
             maxBoost = Math.pow(2.0, maxLog2.toDouble()).toFloat(),
             liftCap = liftCap,
+            targetMode = if (useDisplayTarget) "display" else "sdr",
             meanLift = meanLift,
             profile = opt.profile,
             ltmRadiusPx = ltmStats?.radiusPx ?: 0,

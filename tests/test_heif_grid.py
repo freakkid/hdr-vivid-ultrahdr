@@ -12,7 +12,13 @@ import sys
 import tempfile
 import unittest
 
-from uhdr.heif_grid import HeifGrids, box, full_box
+# 与 test_pipeline.py 一致：不依赖外部 PYTHONPATH（docs/07 §6-3）。
+# 缺这段时 `python -m unittest discover -s tests` 会 ModuleNotFoundError: uhdr，
+# 只有 verify_bake.py 那种自己塞 PYTHONPATH 的入口才跑得起来。
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "..", "src", "python"))
+
+from uhdr.heif_grid import HeifGrids, box, full_box  # noqa: E402
 
 
 # ---------------------------------------------------------------------------

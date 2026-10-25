@@ -45,6 +45,12 @@ out/t_*.jpg
 # 目视对比材料（含真实照片内容，同 baked 产物处理）
 out/visual/
 
+# WorkBuddy 会话数据（记忆/追踪，含本机路径与凭据痕迹，绝不入库）
+.workbuddy/
+
+# Kotlin 单文件编译预检的临时目录（2026-10-25 起用它校验 KDoc 在 KGP 1.9.24 下可编）
+out/kt_compile_test/
+
 # 手机截屏（含状态栏、通知、电量等设备状态，不入库）
 out/screen_*.jpeg
 out/screen_*.jpg

@@ -1,7 +1,7 @@
 # HANDOVER — 交接文档
 
-> 最后更新：2026-10-25（v0.1.23：**修「层次少」= LTM 双斜率肩 + ceiling 1.0**，层次下限随实测上调；提交/打包前强制本地自检；**测试策略调研见 `docs/07-testing-strategy.md`**）
-> 读这一篇就能接手，不需要回看聊天记录。**先看 §0 和 §10.2，这两处是这一晚的结论。**
+> 最后更新：2026-10-26 凌晨（**「烘焙图发灰/没效果」已修完并本地验收通过**：根因 = SDR 锚定基准错，改为 display 目标（log 域几何插值）；验收基准随之拆成 display/legacy 双套；Kotlin 已同步、像素一致；8 步门禁全绿 + 观感图人工复核通过；**v0.1.24 已打包**（`out/HdrVividUltraHdr-0.1.24-debug.apk`，手机 USB Offline 未推上去 → 需解锁后重推）。完整状态见 **§10.5**）
+> 读这一篇就能接手，不需要回看聊天记录。**先看 §0 和 §10.5，这两处是当前任务的完整状态。**
 
 ---
 
@@ -10,14 +10,14 @@
 | 问题 | 答案 |
 |---|---|
 | 这是什么 | 把华为 HDR Vivid 静图导出为「SDR 主图 + 增益图 + XMP + MPF」的 Ultra HDR JPEG；**并**同时产出一张「HDR 效果已烘焙进像素」的普通 JPEG（微信/任何设备可见） |
-| 到哪一步了 | **真机全链路已跑通**（`docs/02` §2.9：真实华为样本，Python 独立校验 **20/20**）。烘焙算法 v3 + 4 档 profile + 双斜率肩；本机可真跑 Kotlin（`tests/android_parity/`）；一键自检 `scripts/verify_bake.py` 8 步全绿。**0.1.23 已推送到手机（卓易通待安装）**，「层次少」已修（双斜率肩，2026-10-25 晚），观感待用户最后一次确认 |
-| 下一步唯一要做的事 | ① **改任何东西先跑 `python scripts/verify_bake.py`**（静态→两端常量→回归→观感验收 20/20→Kotlin 像素→grid→JVM 封装→LTM 双实现，缺 kotlinc/样例会标 SKIP）；② 装新包确认**「层次少」已修**（高光 spread 0.417→0.50+）；③ ceiling 1.0 是 v0.1.15 踩过坑的区域，装机后重点看高光是否再现「大片纯白」 |
+| 到哪一步了 | **真机全链路已跑通**（`docs/02` §2.9：真实华为样本，Python 独立校验 **20/20**）。烘焙算法 v3 + 4 档 profile + 双斜率肩；本机可真跑 Kotlin（`tests/android_parity/`）；一键自检 `scripts/verify_bake.py` 8 步全绿。**「发灰/没效果」已修完（§10.5）**：出货档改 display 目标 → local@0.70 中位亮度 +27~+35（旧 +0~+2），验收 32/32、像素对照 8/8 一致、观感图人工复核通过。**v0.1.24 已打包，未推到手机**（USB Offline）|
+| 下一步唯一要做的事 | ① 手机解锁 + 允许 USB 调试 → 重推 `out/HdrVividUltraHdr-0.1.24-debug.apk`（命令见 §6）→ 卓易通安装 → 看观感；② 重点确认两件事：display 目标下**高光是否仍自然**（不应出现大片死白）、`off`/`faithful` 两档是否仍「不改明暗」；③ 若 via 观感仍不够狠，**先调滑杆到 1.00 再判断**，不要直接改算法 |
 | 部署到手机 | 用户设备是 **HarmonyOS NEXT（HUAWEI CLS-AL30 / 7.0.0.109 / API 26）**。NEXT 不原生解析 APK，但可装进**卓易通**容器运行，步骤见 `docs/05-harmonyos-zhuoyitong.md`。**早期文档写过「鸿蒙装不了 APK」，那是错的** |
 | 手机调试工具 | **`C:\DevEco\command-line-tools\sdk\default\openharmony\toolchains\hdc.exe`（3.2.0f）**，能截屏/拉日志/推拉文件。随 HarmonyOS Command Line Tools 安装，**不在仓库里**，换机器需重装（§1.3-C）|
-| 下一个真问题 | **观感对齐缺少参照物**。目前以「源 SDR 主图的中位亮度」为基准（依据：手机显示 HDR 时参考白仍对应 SDR 1.0）。若这样仍不一致，唯一可靠办法是拿**手机截屏**当目标对齐 —— 用户暂不愿意，所以这是唯一没有客观解的部分 |
+| 下一个真问题 | 观感只剩**装机确认**（本地指标 + 看图都已过）。遗留数字问题：display@0.70 的 `hl_hf` 在 A/B 样本 0.61~0.63，视觉可接受（zoom2 图为证），阈值已随之定 0.55（§10.5.5） |
 | 已解决的真问题 | 那张 HEIC **确实有增益图**：不是 aux，而是 `tmap` 派生项引用「主图 grid + 增益图 grid（4 块 hvc1）」；且系统/微信转 JPEG 时会写成 ISO Ultra HDR（增益图 535~620 KB），**可绕行**（§3.5） |
 | 仓库 | `git@github.com:freakkid/hdr-vivid-ultrahdr.git`（私有），分支 `main` |
-| 最新提交 | 见 `git log --oneline -1`（截至 v0.1.16）|
+| 最新提交 | 见 `git log --oneline -1`（截至 v0.1.24）|
 | 交付形态 | **纯 Kotlin，APK 内 `.so` 数量为 0**。native libultrahdr 只是备选，从未编译验证 —— 别一上手就去接 NDK |
 
 ---
@@ -58,9 +58,9 @@ bash scripts/install_android_toolchain.sh
 # 3) 生成 local.properties（每台机器不同，故意不入库）
 printf 'sdk.dir=C\\:\\\\Users\\\\<你的用户名>\\\\Android\\\\Sdk\n' > src/android/local.properties
 
-# 4) 验证 Python 侧（32 项测试，约 2 秒）
+# 4) 验证 Python 侧（53 项测试，约 5 秒）
 ./run.sh test
-python3 scripts/check_android_project.py  # 工程静态自检 45 项（纯标准库，任一 Python 3 均可，无需 venv）
+python3 scripts/check_android_project.py  # 工程静态自检 47 项（纯标准库，任一 Python 3 均可，无需 venv）
 
 # 5) 构建 APK
 export JAVA_HOME="$HOME/.workbuddy/binaries/jdk/17"
@@ -137,7 +137,7 @@ HDC="C:/DevEco/command-line-tools/sdk/default/openharmony/toolchains/hdc.exe"
 
 ## 2. 基线状态
 
-Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 32 项、静态自检 45 项、
+Ultra HDR 主链路与烘焙链路均已实现并通过验证：回归 53 项、静态自检 47 项、
 APK 可构建（**v0.1.16 / versionCode 17**）。**已完成项不在此罗列**——证据在 `git log` 与
 `docs/02-verification.md`，烘焙算法决策在 `docs/04-HANDOFF-bake.md`。
 尚未做的只有 §3。
@@ -574,13 +574,13 @@ ROOT="$(git rev-parse --show-toplevel)"; cd "$ROOT"   # 每段都从仓库根开
 # Python 侧（一律用 venv 解释器；裸 `python` 指向 3.13.12 系统装，无 PIL/numpy）
 PY="C:/Users/ugnam/.workbuddy/binaries/python/envs/default/Scripts/python.exe"
 
-./run.sh test                              # 48 项回归
+./run.sh test                              # 53 项回归
 "$PY" tests/acceptance/accept.py --real <样本.jpg>   # 烘焙验收（6 指标，改参数必跑）
 "$PY" tests/acceptance/accept.py                     # 同上，仅合成样本（CI 用）
 ./run.sh demo                              # 端到端演示（合成源）
 PYTHONPATH=src/python "$PY" -m uhdr.cli inspect  <file>    # 容器结构诊断
 PYTHONPATH=src/python "$PY" -m uhdr.cli validate <file>    # 结构自检
-"$PY" scripts/check_android_project.py     # Android 工程静态自检（45 项，纯标准库）
+"$PY" scripts/check_android_project.py     # Android 工程静态自检（47 项，纯标准库）
 "$PY" scripts/analyze_image.py <file> [--extract]  # 一次判定 JPEG/HEIC + 增益图 URN
 bash tests/ltm_parity/run_parity.sh        # LTM 双实现对照（仅 macOS 验证过，见 §5.1）
 "$PY" tests/bake_quality_check.py <源.jpg>    # 烘焙画质体检（SSIM/等亮度HF/局部对比，信息性）
@@ -796,13 +796,127 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
   （`target = sdr + (blended - sdr) * strength`），封顶退回安全垫角色。
   回归：`tests/test_profiles.py::TestStrengthTakesEffect` 要求 0.90 比 0.35 明显更亮。
 
+---
+
+### 10.5 【已修完 2026-10-26】「烘焙图发灰/没效果」
+
+**用户原话（本轮唯一验收标准）**：「就是烘焙的图片还是灰灰的」→「为啥你不能本地先解决了这个问题，通过本地测试了，在打包让我看」。
+要求的流程是 **本地解决 → 本地看图和测试通过 → 才打包**。上一轮「门禁全绿就推」的做法已被明确否定。
+
+**结论：已按这个流程走完**——本地指标 32/32、门禁 8 步全绿、`vv_*` 观感图人工复核通过，才打的包（v0.1.24）。
+
+#### 10.5.1 根因（已定位，勿再怀疑参数）
+
+全链（accept.py + App）一直拿 **SDR 主图当参照基准**：
+`w = smoothstep(0.35, 0.90, sdr_lum)` → `blended = sdr×(1−w) + mapped×w` → `target = sdr + (blended − sdr) × amount` → `min(target, sdr × 1.25)`（faithful 1.05）。
+数学上把 HDR 增量摁回平坦底图。而**用户眼睛的参照物是手机上的 HDR 显示效果**（display-referred），不是 SDR 底图。
+量化铁证（local@0.70 出货档，3 真实样本）：中位亮度仅 +0~+2 灰阶、暗部 1.01~1.04×——「没效果」不是感觉，是实测。
+
+**更值得记住的一层**：这不是「算法参数没调好」，而是**验收口径错了**。
+旧门禁要求「≈底图」，于是它把修复本身判成失败。改阈值不是为了放过代码，
+是因为原阈值测的不是产品目标（依据完整写进 `docs/07-testing-strategy.md` §7 落实记录）。
+
+#### 10.5.2 修法（Python / Kotlin 两端已同步，**已提交**）
+
+`src/python/uhdr/bake.py` 与 `HdrBaker.kt` 逐项对齐：
+
+- `target_mode_for_profile(profile)` / `targetModeForProfile(profile)`：**两端唯一来源**。
+  `off`/`faithful` → `"sdr"`（旧行为/不提亮逃生阀），`local`/`wechat` → `"display"`。
+- `_display_target(...)` / `displayTarget(...)`：log 域几何插值
+  `target = exp(ln sdr + amount × (ln mapped − ln sdr))`，纯黑（sdr ≤1e-6）保持 0。
+- `bake()` 色调映射块：LTM 分支内按模式分派；off（无 LTM）分支保持 legacy 不变。
+- 几何插值三性质：① 暗部按比例提亮（乘性感知）；② amount=0 精确回底图、=1 精确等于映射结果（滑杆=HDR 剂量）；③ 目标 ≤ sdr^(1−amount) ≤ 1 天然不过曝，不需要 lift_cap。
+- Kotlin 侧新增 `Stats.targetMode`，`MainActivity` 的导出日志据此打印
+  「目标模式 display / sdr」，避免看着 `liftCap` 误判（display 路径不用它）。
+
+实测（3 真实样本 × local 档）：
+
+| 配置 | 中位 | 均值 | 暗部 | clip_delta | SSIM | 饱和 | hl_hf |
+|---|---|---|---|---|---|---|---|
+| legacy@0.70（旧出货） | +0~+2 | — | 1.01~1.04× | ≈0 | — | — | — |
+| display@0.40 | +14~+17 | +12~+14 | 1.37~1.42× | ≈0 | 0.943~0.978 | 0.98~1.01 | 0.85~0.92 |
+| display@0.70 | +27~+35 | +25~+30 | 1.80~1.89× | ≈0 | 0.895~0.954 | 0.92~0.98 | 0.61~0.80 |
+
+#### 10.5.3 观感复核（人工看图，已通过）
+
+12 张对比图在 `out/visual/diag/`（gitignored；`make_views.py` 可复现）：
+`vv_{A,B,C}_main.jpg`（base | legacy70 | d70 三联）、`vv_{A,B,C}_d40.jpg`、`vv_{A,B,C}_zoom2.jpg`（最亮区 460×460 放大）。
+**本轮逐张复核结论**：d70 三样本全部「明显增强、自然、无死白」——
+- A（汤面）：汤勺变亮但勺沿与泡沫气泡纹理仍在，无光晕；
+- B（猫与告示牌）：毛丝、告示牌文字「请勿拍打玻璃 / Do Not Tap on the Glass」清晰可读；
+- C（LED 灯带）：天花板渐变与木纹保留，胡须仍可见。
+legacy70 与 base 几乎无差 —— 正好复现用户说的「没效果」。
+**决策：默认 strength 保持 0.70**（滑杆可下调；用户嫌亮时可切 `faithful`）。
+
+#### 10.5.4 验收基准拆分（原 #10，已完成）
+
+`tests/acceptance/accept.py` 改为**分 profile 双基准**，由 `baseline_for(profile)`
+自动分派（`judge()` 不再由调用方传阈值 —— 同一 profile 在不同调用点用不同口径
+是上一轮踩过的坑）。
+
+| 档位 | 基准 | 关键阈值 |
+|---|---|---|
+| display（local/wechat） | **可见增强带 + 自然护栏** | 中位 **+10~+45**、均值 **+8~+40**、暗部 **1.15~2.10**；护栏 clip ≤+1pt、SSIM ≥0.88、饱和 0.90~1.15、hl_spread ≥0.45、hl_hf ≥0.55、hf_all ≥0.92 |
+| legacy（off/faithful） | 旧「≈底图」**原样不动** | 中位 ±3、均值 ±5、暗部 ≤1.10、SSIM ≥0.90、饱和 0.92~1.15、hl_spread ≥0.45、hl_hf ≥0.75、hf_all ≥0.95 |
+
+三个下限按实测定，且**必须仍能拦住旧算法**：
+
+| 指标 | display 实测 | 阈值 | 旧算法实测 | 能拦住？ |
+|---|---|---|---|---|
+| `hl_spread` | 0.500~0.800 | 0.45 | 0.417 | **能**（主哨兵）|
+| `hl_hf` | 0.605~0.984 | 0.55 | 0.690 | 不能（辅哨兵）|
+| `hf_all` | 0.946~1.068 | 0.92（原 0.95）| 0.984 | 本就不用于区分新旧 |
+
+**别把锅丢给 `hl_hf`**：旧指数肩的 `hl_hf` 0.690 高于 0.55，只靠它会静默放过；
+真正能拦住的是 `hl_spread`（旧肩恒定 0.417）。`hf_all` 由 0.95 降到 0.92 是
+必要修正（display 实测最低 0.946 本就会被误拦），理由写在 README 与 docs/07。
+
+同时把**真实样本矩阵扩到 4 profile**（此前 real 只跑 local/off，出货档 wechat
+从未被真实数据压过）。
+
+#### 10.5.5 门禁与打包（原 #11/#12，已完成）
+
+```
+静态自检 47/47 · 两端一致性 20/20（新增 10 项 display 对账）· 回归 53 项 OK
+观感验收 32/32（合成 8 + 真实 3 样本 × 4 profile × 2 strength）
+Kotlin 像素对照 8/8 一致（4 档均值差 0.36~0.56 / P99 ≤3 / 最大 ≤5）
+Kotlin grid 对照 PASS · Kotlin JVM 封装对照 10 用例 101 断言 PASS
+LTM 双实现对照 PASS（float max_abs 4.3e-05）
+```
+
+`check_parity.py` 新增 10 项 display 对账（函数存在、归类一致、公式逐项匹配、
+纯黑归零、按模式分支），任一端漏改都会红 —— 这是防「Python 出增强图、App 出灰图」的那层。
+
+**顺带修的**：`tests/test_heif_grid.py` 缺 `sys.path.insert`，导致
+`python -m unittest discover -s tests` 直接 ModuleNotFoundError（只有塞了
+PYTHONPATH 的入口能跑）。已补，现在裸跑 discover 也是 53 项 OK。
+
+打包：`out/HdrVividUltraHdr-0.1.24-debug.apk`（2.28 MB，versionCode 25）。
+**推送失败**：`hdc list targets -v` 显示设备 `Offline`，`file send` 报
+`need connect-key`。→ 需在手机上解锁屏幕并确认「允许 USB 调试」后重推。
+
+#### 10.5.6 已试并否决的方案（勿重复踩坑）
+
+1. **超白像素豁免收缩**（smoothstep(0.85, 1.15, lum) 过渡后直接采信 mapped）：hl_spread 从 0.50 恶化到 0.17~0.29——豁免后输出全跟随平肩（斜率 0.15），legacy 的 sdr 锚定保留的源变化反而更多。已撤销，结论写入 `_display_target` docstring。
+2. **LTM 肩部调参**：提高 highlight_start（0.78→0.88/0.92）反而整体更亮、hl_hf 仍 0.57~0.63；`_SHOULDER_TARGET` 是模块常量，不受 shoulder_white 影响。**肩部参数不是主杠杆，停止该方向调参。**
+3. **直接调 `maxLift` / `strength`**：已有回归守着（`test_profiles.py`），乱调只会回到「过曝/太亮」。display 路径根本不用 `maxLift`。
+
+#### 10.5.7 环境与产物位置
+
+- venv：`C:/Users/ugnam/.workbuddy/binaries/python/envs/default/Scripts/python.exe`
+- 真实样本：`out/visual/samples/HDR_SAMPLE_{A,B,C}.jpg`（gitignored）
+- 诊断脚本（gitignored，`out/visual/diag/`）：`sweep_display.py`（9 配置扫描）、`probe_shoulder.py`、`probe_transfer.py`（高光传递曲线）、`make_views.py`（观感图）、`calib_new.py`（4 profile × 2 strength × 3 样本全指标表）、`probe_judge.py`（judge 双基准反向探针：旧算法灌进 display 档应 3 条全红，display 指标灌进 off 档也应全红）
+- 单次耗时参考：一个「样本 × 配置」约 9~10 秒（long_edge 1200）。`calib_new.py` 全套约 3.5 分钟，`accept.py --real`（32 用例）约 5 分钟，`verify_bake.py --no-pull` 约 6 分钟。**后台跑 + 落文件**，别指望前台 2 分钟超时。
+- git：`main` 分支，commit+push 走 GitHub 443 通道（22 端口被阻断，`GIT_SSH_COMMAND` 包一层 ssh.github.com:443，详见用户级 `~/.workbuddy/MEMORY.md`）。`.workbuddy/`、`out/kt_compile_test/` 已入 `.gitignore`；`promo/`（落地页草图，含真实照片）**刻意不入库**。
 
 ---
 
 ## 11. APK 版本对照（弄错版本会白忙一场）
 
 `.gitignore` 里是全局 `*.apk`，**构建产物不入库**，每台机器只有自己构建的那份。
-本地产物与手机上待装的都是 `out/HdrVividUltraHdr-0.1.23-debug.apk`（2.17 MB，2026-10-25 已推送，卓易通待安装）。
+本轮产物是 `out/HdrVividUltraHdr-0.1.24-debug.apk`（2.28 MB / versionCode 25，
+2026-10-26 构建，**尚未推到手机**：`hdc list targets` 显示设备 Offline）。
+手机上现装的很可能是 0.1.23 或更早。
 
 ### 11.1 ⚠ 同一个 versionCode 1 / versionName 0.1.0 被两套界面用过
 
@@ -841,6 +955,7 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
 | **0.1.21** | **22** | 见 `git log` | 「导出原图」改存**原件**字节（此前系统转码成功时会导出转码后的 JPEG）；按钮文案改为「导出（长边 2048，超出才缩）」「导出原图（选位置，任何格式都可用）」 | 界面文案变化 |
 | **0.1.22** | **23** | 见 `git log` | **修「烘焙图比原图灰」**：源图 ICC 是 Display P3，此前丢掉 ICC 后系统按 sRGB 解释，实测平均饱和度 60.2 而正确值 69.0（-8.8 点）。现在两端都先转 sRGB 再烘焙（Python `to_srgb()` / Kotlin `inPreferredColorSpace=sRGB`） | 无界面变化；烘焙图色彩恢复正常 |
 | **0.1.23** | **24** | 见 `git log` | **修「层次少」**：根因是 LTM 指数软膝 + 0.96 天花板把高光全部拍平在 [0.95, 0.96]（hl_spread 恒定 0.417×源）。换成**双斜率肩**（SDR 带线性压到 `shoulder_white`=0.93，HDR 超白带小斜率延伸到 0.96）+ ceiling 0.96→1.0；`ltm.py` / `LocalToneMapping.kt` 逐行对齐；层次下限随实测上调（hl_spread 0.45 / hl_hf 0.75 / hf_all 0.95，旧算法实测值全部落在下限之下）。全门禁 8 步 PASS | 无界面变化；高光层次恢复（spread 0.417→0.50+），装机观感待人工确认 |
+| **0.1.24** | **25** | 见 `git log` | **修「发灰/没效果」**：根因是全链拿 SDR 底图当目标，把 HDR 增量摁平。出货档（local/wechat）改 **display 目标**——log 域几何插值 `target = exp(ln sdr + amount×(ln mapped − ln sdr))`，`off`/`faithful` 保持旧 sdr 路径；Kotlin 同步 + 10 项 display 对账；验收基准拆成 display/legacy 双套（display 用「增强带 + 自然护栏」）。实测 local@0.70 中位 +27~+35（旧 +0~+2）；门禁 8 步全绿、验收 32/32、像素对照 8/8 一致 | 无界面变化；**导出日志新增一行「目标模式 display / sdr」**（取代原来只报 liftCap 的说法），可据此确认跑的是新路径 |
 
 ### 11.3 一眼判定手机上装的是哪版
 
@@ -848,6 +963,8 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
 
 | 看到这个 | 版本 |
 |---|---|
+| 导出日志出现 `目标模式 display`（或 `目标模式 sdr`） | **0.1.24** |
+| 下拉第 4 项是「保真（faithful：不提亮，只留高光细节）」 | ≥ 0.1.17 |
 | 摘要出现 `compat-tmap=` / `tmap项=` / `iref=` 三行 | **0.1.12** |
 | 「查看全部日志（全屏）」按钮 | **0.1.11** |
 | 「清理导出残留」按钮 | **0.1.10** |
@@ -867,28 +984,31 @@ python tests/android_parity/run_parity.py            # 或随 verify_bake.py 自
 
 ## 12. 一句话总结
 
-**功能已经跑通，剩下的全是「观感」和「对外实测」。**
+**功能已经跑通；「发灰/没效果」这条观感主线已在本地闭环（v0.1.24），剩装机确认与对外实测。**
 
-**已闭环（2026-10-24，v0.1.16）**
+**已闭环**
 
-- 真机全链路：真实华为样本 → 解析 → 采样解码 → 烘焙 → 几何同步 → 封装 → 自检 → 导出，
-  产物 841 KB，经微信传回电脑后 Python 独立校验 **20/20 全 PASS**（`docs/02` §2.9）。
-  `GainMapMax=2.148445` 与源一致，证明 v0.1.8 的「读增益图自身 XMP」修复在真机生效。
-- 烘焙算法 v3（§10.2）：按 SDR 亮度分流 + `maxLift` 封顶，整体亮度 +2.1%、纯白 0%、验收 5/5。
+- 真机全链路（2026-10-24，v0.1.16）：真实华为样本 → 解析 → 采样解码 → 烘焙 → 几何同步 →
+  封装 → 自检 → 导出，产物 841 KB，经微信传回电脑后 Python 独立校验 **20/20 全 PASS**
+  （`docs/02` §2.9）。`GainMapMax=2.148445` 与源一致，证明 v0.1.8 的「读增益图自身 XMP」修复在真机生效。
 - HEIC 增益图搞清楚了（§3.5）：`tmap` 派生项引用「主图 grid + 增益图 grid（4 块 hvc1）」，
   不是 aux。自研提取成本高，但系统转 JPEG 会写成 ISO Ultra HDR，**可绕行**。
+- 观感三连修（每一条都是「用户一眼看出、门禁全绿」）：
+  | 反馈 | 根因 | 版本 |
+  |---|---|---|
+  | 发灰 | 丢了 Display P3 的 ICC | 0.1.22 |
+  | 层次少 | LTM 指数软膝 + 0.96 天花板拍平高光 | 0.1.23 |
+  | **没效果** | **全链拿 SDR 底图当目标，把 HDR 增量摁平**（门禁口径也一起错） | **0.1.24** |
+
+  三条的共同教训：**「门禁全绿」只证明「代码做到了阈值要求的」**，阈值测错东西时
+  全绿毫无意义。每次都要问一句「这套指标测的是用户要看的东西吗」。
 
 **还没做（按优先级）**
 
-1. **用户确认 0.1.22 观感** —— 最新反馈是「发灰、层次少」。**发灰已修**（v0.1.22：
-   源图 ICC 是 Display P3，此前丢掉后系统按 sRGB 解释，平均饱和度 60.2 而正确值 69.0）。
-   **「层次少」已修**（2026-10-25 晚）：根因是 LTM 指数软膝 + 0.96 天花板把高光
-   全部拍平在 [0.95, 0.96]（spread 恒定 0.417×源）；已换双斜率肩 + ceiling 1.0，
-   `ltm.py`/`LocalToneMapping.kt` 逐行对齐，层次下限随实测上调（0.45/0.75/0.95，
-   旧算法实测值全部落在下限之下），全门禁 8 步 PASS。**剩余人工项：观感确认** ——
-   ceiling 1.0 是 v0.1.15「大片纯白」踩过的区域，这次有 `clip_delta`/SSIM 阈值
-   + 3 真实样本兜底，但最终观感仍需装机肉眼确认（`--apk` 构建推送前先跑门禁）。
-   **别再直接调 `maxLift`/`strength`** —— 那两个已有回归守着，乱调只会回到"过曝/太亮"。
+1. **装机确认 0.1.24 观感** —— APK 已构建（`out/HdrVividUltraHdr-0.1.24-debug.apk`），
+   但 `hdc` 显示设备 Offline 没推上去。推上去后重点看：① display 目标下高光是否仍自然
+   （不该出现大片死白，`clip_delta` 实测 ≈0 兜底）；② `off`/`faithful` 是否仍「不改明暗」。
+   若嫌不够狠，**先拉滑杆到 1.00 再判断**，不要直接改算法（§10.5.6）。
 2. **微信三路径实测**（§3.3）：不勾原图时会不会剥掉增益图。
 3. **接收端能否显示 HDR**：需要第二台支持 Ultra HDR 的设备。
 
@@ -916,15 +1036,25 @@ SAF 的两个目标位置（「下载内容」「CLS-AL30」）也都是容器�
 > 5. 真机只有一台 HarmonyOS NEXT（CLS-AL30），`hdc` 在 `C:/DevEco/.../toolchains/hdc.exe`；
 >    **装机这一步只能人工**，不要把时间浪费在自动化安装上。
 >
-> 当前待办（按优先级，2026-10-25 晚更新）：
+> 当前待办（按优先级，2026-10-26 凌晨更新）：
 > - ~~P0：把「层次少」量化~~ **已完成**：3 指标下限进 `accept.py`（0.45/0.75/0.95），
 >   根因（指数软膝拍平高光）已修，双斜率肩两端同步；
 > - ~~P1：`docs/07-testing-strategy.md` §2 的七个假绿点~~ **已完成**（退出码三态、
 >   独立 ImageCms 基准、`ltm_parity` 入门禁、jar sha256 侧车、恒真静态项修复）；
 > - ~~P2：JVM 化 `HeifInspector`/`MetadataValidator`/`UltraHdrPackager`/`HdrSourceParser`~~
 >   **已完成**（10 用例 / 101 断言，门禁步骤「Kotlin JVM 封装对照」）；
-> - **剩：装机观感确认**（发灰 + 层次少两项修复叠加，重点看 ceiling 1.0 下高光
->   是否再现「大片纯白」）；微信三路径实测；第二台 Ultra HDR 设备接收验证。
+> - ~~**P0：修「烘焙图发灰/没效果」**~~ **已完成（0.1.24）**，完整状态见 §10.5：
+>   根因 = 全链 SDR 锚定把 HDR 增量摁回底图，而用户参照物是手机 HDR 显示效果；
+>   出货档改 display 目标（log 域几何插值，`target_mode_for_profile` + `_display_target`，
+>   Kotlin 侧 `targetModeForProfile` + `displayTarget` 逐行对齐）；
+>   `accept.py` 拆 display/legacy 双基准；门禁 8 步全绿、验收 32/32、像素对照 8/8、
+>   观感图人工复核通过后才打包。**流程变更：不再「门禁一绿就推」**，必须本地验证通过才打包。
+>   已否决勿重试：超白豁免收缩、LTM 肩部调参、直接调 `maxLift`/`strength`（§10.5.6）。
+> - **P0（新，唯一阻塞项）：装机确认 0.1.24 观感** —— APK 已构建
+>   `out/HdrVividUltraHdr-0.1.24-debug.apk`，但设备 `hdc list targets -v` 显示 **Offline**，
+>   `file send` 报 `need connect-key`。**需用户在手机上解锁屏幕并允许 USB 调试后重推**。
+>   装完后重点看：display 目标下高光是否仍自然（不该大片死白）、`off`/`faithful` 是否仍不改明暗。
+> - 剩：微信三路径实测；第二台 Ultra HDR 设备接收验证。
 
 **2026-10-24（v0.1.15）烘焙算法 v2 —— 用验收数据逼出来的修正**：
 

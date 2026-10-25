@@ -627,8 +627,15 @@ class MainActivity : ComponentActivity() {
                 appendLog("尺寸 ${stats.outSize.first}x${stats.outSize.second}  " +
                     "峰值 ${"%.2f".format(stats.hdrPeak)}x  白点 ${"%.2f".format(stats.whitePoint)}  " +
                     "最大 boost ${"%.2f".format(stats.maxBoost)}x  裁切 ${"%.2f".format(stats.clippedRatio * 100)}%")
-                appendLog("输出亮度 ${"%.3f".format(stats.meanLift)}x（源 SDR = 1.000，上限 " +
-                    "${"%.2f".format(stats.liftCap)}x）—— 这个数随 strength 变化才说明参数生效")
+                if (stats.targetMode == "display") {
+                    appendLog("输出亮度 ${"%.3f".format(stats.meanLift)}x（源 SDR = 1.000）" +
+                        "目标模式 display：log 域几何插值，不逐像素封顶 —— " +
+                        "这个数随 strength 变化才说明参数生效")
+                } else {
+                    appendLog("输出亮度 ${"%.3f".format(stats.meanLift)}x（源 SDR = 1.000，上限 " +
+                        "${"%.2f".format(stats.liftCap)}x）目标模式 sdr（锚回底图）—— " +
+                        "这个数随 strength 变化才说明参数生效")
+                }
                 if (profile != "off") {
                     appendLog("LTM 半径=${stats.ltmRadiusPx}px  detail=${"%.2f".format(stats.ltmDetailGain)}  " +
                         "暗部提升=${"%.2f".format(stats.ltmShadowLift)}x")

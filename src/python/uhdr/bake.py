@@ -14,11 +14,19 @@
        log_boost = recovery × (log2(max_boost) − log2(min_boost)) + log2(min_boost)
        gain = 2^log_boost
     3. HDR_linear = (SDR_linear + offset_sdr) × gain − offset_hdr
-    4. 色调映射：以高分位亮度为白点做归一化 + 高光软膝压缩
-    5. 线性 → sRGB，输出 JPEG
+    4. 色调映射（两种目标模式，见 target_mode_for_profile）：
+       - display（local/wechat，出货默认）：目标即「HDR 映射结果本身」，
+         按 strength 在 log 亮度域向 SDR 底图几何插值
+       - sdr（off/faithful，旧行为）：按 sdr_lum 分流混合 + 增量缩放 + lift_cap，
+         把结果锚回底图亮度，用于 A/B 对照与「不提亮」逃生阀
+    5. 线性 → sRGB，sRGB 域饱和度补偿 → 三角抖动量化 → JPEG
 
-第 4 步是成败关键：直接归一化会让画面发灰，纯 Reinhard 会压掉对比，
-所以用「归一化 + 软膝 + 轻微 S 曲线 + 饱和度补偿」的组合。
+第 4 步是成败关键。2026-10-25 深夜之前全链默认 sdr 锚定：门禁指标
+（中位±3 / 均值±5 / SSIM）全部对比 SDR 底图，把烘焙图死死摁在平坦底图上 ——
+实测中间调与底图 ±1 灰阶，用户装机后观感是「灰灰的、没效果」。而用户眼睛的
+参照物是手机上的 HDR 显示（整体更亮、高光耀眼），两个目标根本不同。
+因此出货档（local/wechat）改用 display 目标：让烘焙图真正带上 HDR 的亮度
+结构，验收基准也随之从「≈底图」改为「可见增强 + 自然护栏」（accept.py）。
 """
 from __future__ import annotations
 
@@ -50,15 +58,31 @@ class BakeOptions:
     # sdr-white = 以 1.0 为 SDR 白点（推荐）；peak = 按高分位归一化（会压暗全图）
     anchor: str = "sdr-white"
     # 高光加权区间（线性亮度）：低于 blend_start 完全保持 SDR，高于 blend_end 完全采信 HDR。
-    # 必要性：增益图在全图都有值（实测中位 86/255），直接乘会把**中间调一起提亮**——
-    # 数学上无法靠调 strength 消除（strength→0 只会连 HDR 一起没了）。
-    # 手机显示 HDR 时参考白仍对应 SDR 1.0，中间调观感与 SDR 一致，所以这里必须按亮度分流。
+    # **仅 off/faithful 的 sdr 锚定路径使用**（见 target_mode_for_profile）。
+    # 出货档 local/wechat 已改用 display 目标（log 域几何插值），不再按亮度分流 ——
+    # 分流假设「手机显示 HDR 时中间调与 SDR 一致」，但用户的参照物是手机上更亮的
+    # HDR 显示效果，分流把 HDR 增量摁死后观感就是「灰灰的、没效果」。
     blend_start: float = 0.35
     blend_end: float = 0.90
     # 单像素相对源 SDR 的最大提亮倍数（**安全垫，不随 strength 缩放**）。
-    # 强度由 strength 作用在「HDR 相对 SDR 的增量」上实现，见 bake() 里的 amount。
+    # 仅 off/faithful 的 sdr 锚定路径使用；display 路径的目标天然 ≤1
+    # （LTM ceiling 钳制 + 几何插值 ≤ sdr^(1−strength)），不需要逐像素封顶。
     # 封顶仍是「发白」的解药：实测 192~223 被推 +8.5% 即可见。
     max_lift: float = 1.25
+
+
+def target_mode_for_profile(profile: str) -> str:
+    """profile → 色调映射目标模式。两端（Python/Kotlin）的唯一来源。
+
+    display = 显示导向：目标即 LTM/全局映射结果本身，按 strength 在 log 亮度域
+               向 SDR 底图几何插值（strength 0 → 等同底图，1 → 完整映射结果）。
+               local/wechat 走这条 —— 烘焙图要带的是手机上 HDR 显示的亮度结构，
+               不是平坦的 SDR 底图。
+    sdr     = 底图锚定（旧行为）：按 sdr_lum 分流混合 + 增量缩放 + lift_cap。
+               off 是 A/B 对照旧行为，faithful 是「嫌亮」用户的不提亮逃生阀，
+               两档都明确承诺「不改变整体明暗」，必须留在旧路径。
+    """
+    return "sdr" if profile in ("off", "faithful") else "display"
 
 
 @dataclass
@@ -101,6 +125,42 @@ def _soft_knee(x: np.ndarray, knee: float, ceiling: float = 0.96) -> np.ndarray:
 def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
     t = np.clip((x - e0) / max(e1 - e0, 1e-6), 0.0, 1.0)
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
+
+
+def _display_target(
+    sdr_lum: np.ndarray,
+    mapped_lum: np.ndarray,
+    lum: np.ndarray,
+    amount: float,
+    white: float = 1.0,
+) -> np.ndarray:
+    """显示导向目标：log 亮度域把 SDR 底图按 amount 几何插值到 HDR 映射结果。
+
+        target = exp(ln sdr + amount × (ln mapped − ln sdr))
+
+    为什么用几何（log 域）插值而不是线性：
+      1. 亮度是乘性感知量。线性插值按绝对差值分配，暗部的 HDR 增量绝对值小、
+         会被摁死；几何插值按比例缩放，暗部也拿到成比例的提亮；
+      2. amount=0 精确回到底图亮度（strength 滑杆底端 = 无效果），
+         amount=1 精确等于映射结果 —— 两端行为可预期，滑杆语义即「HDR 剂量」；
+      3. 映射结果 ≤1（LTM ceiling 钳制），插值结果 ≤ sdr^(1−amount) ≤ 1，
+         天然不会过曝，不需要逐像素 lift_cap。
+
+    纯黑像素（源亮度 ≤1e-6，即 sRGB 0）保持 0：LTM 的局部提亮会把纯黑邻域
+    一起抬起（夜模式式），几何插值会把它们保留成灰黑，这里显式摁回纯黑，
+    与 sdr 路径（smoothstep 在 0 处权重为 0，黑位不变）行为一致。
+
+    试过并否决：超白像素豁免收缩（直接采信映射结果）。实测 hl_spread 从 0.50
+    掉到 0.17~0.29 —— 豁免后输出全跟随肩部压缩区间（传递函数斜率仅 0.15），
+    底图锚定带来的源变化反而更多。几何插值本身已是高光区保层次的最优形式。
+    （lum/white 入参保留给将来的传递函数实验，当前实现不使用。）
+    """
+    sdr_safe = np.maximum(sdr_lum, 1e-6)
+    mapped_safe = np.maximum(mapped_lum, 1e-6)
+    log_sdr = np.log(sdr_safe)
+    log_target = log_sdr + np.float32(amount) * (np.log(mapped_safe) - log_sdr)
+    geo = np.exp(log_target).astype(np.float32)
+    return np.where(sdr_lum <= 1e-6, 0.0, geo).astype(np.float32)
 
 
 def _resize_rgb(img: Image.Image, size: tuple[int, int]) -> Image.Image:
@@ -182,14 +242,17 @@ def bake(
 
     # ---- 色调映射 ----
     # 安全垫：逐像素最多比源 SDR 亮 max_lift 倍（faithful 压到 1.05，几乎不提亮）。
+    # 仅 off/faithful 的 sdr 锚定路径使用；display 路径不需要逐像素封顶
+    # （目标 ≤ sdr^(1−amount) ≤ 1，见 _display_target）。
     lift_cap = min(opt.max_lift, 1.05) if opt.profile == "faithful" else opt.max_lift
-    # strength 作用在「HDR 相对 SDR 的增量」上。只让增益乘 strength 时，色调映射会把差异
-    # 压平 —— 0.30 与 1.00 的输出几乎一致，真机反馈就是「强度不生效」。
+    # display 路径里 strength 是「HDR 观感的总体剂量」（0=等同底图，1=完整映射）；
+    # sdr 路径里 strength 作用在「HDR 相对 SDR 的增量」上。只让增益乘 strength 时，
+    # 色调映射会把差异压平 —— 0.30 与 1.00 的输出几乎一致，真机反馈「强度不生效」。
     amount = float(np.clip(opt.strength, 0.0, 1.0))
 
     lum = (hdr * _LUMA).sum(axis=2)
-    # 基准：SDR 主图的亮度。手机显示 HDR 时参考白仍对应 SDR 的 1.0，
-    # 所以 SDR 亮度低的区域（暗部/中间调）观感必须保持原样，只有亮部才采信 HDR。
+    # 基准：SDR 主图的亮度。sdr 路径按它做亮度分流；display 路径用它做几何插值起点
+    # （amount=0 时输出亮度精确回到底图）。
     sdr_lum = (sdr * _LUMA).sum(axis=2)
     w = _smoothstep(opt.blend_start, opt.blend_end, sdr_lum)
 
@@ -206,15 +269,22 @@ def bake(
 
     ltm_stats: dict = {}
     ltm_p = ltm.params_for_profile(opt.profile)
+    display_target = target_mode_for_profile(opt.profile) == "display"
     if ltm_p is not None:
         # 局部色调映射：输出已经是「1.0 = SDR 白点」的显示线性域。
         ltm_res = ltm.apply(hdr, white, ltm_p)
         mapped_rgb = np.clip(ltm_res[0], 0.0, 1.0)
         ltm_stats = ltm_res[1]
         mapped_lum = (mapped_rgb * _LUMA).sum(axis=2)
-        blended = sdr_lum * (1.0 - w) + mapped_lum * w
-        target = sdr_lum + (blended - sdr_lum) * amount
-        target = np.minimum(target, sdr_lum * lift_cap)
+        if display_target:
+            # 出货档（local/wechat）：目标即 HDR 映射结果，按 strength 几何插值，
+            # 超白像素豁免收缩（见 _display_target）。
+            target = _display_target(sdr_lum, mapped_lum, lum, amount, white)
+        else:
+            # 旧行为（faithful）：按 sdr_lum 分流混合 + 增量缩放 + lift_cap。
+            blended = sdr_lum * (1.0 - w) + mapped_lum * w
+            target = sdr_lum + (blended - sdr_lum) * amount
+            target = np.minimum(target, sdr_lum * lift_cap)
         scale = np.where(mapped_lum > 1e-6, target / np.maximum(mapped_lum, 1e-6), 0.0)
         raw = mapped_rgb * scale[..., None]
         out = np.clip(raw, 0.0, 1.0)

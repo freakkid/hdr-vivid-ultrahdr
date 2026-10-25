@@ -70,6 +70,43 @@ def main() -> int:
     check("strength 作用于增量（kt）", bool(re.search(r"\(blended\s*-\s*sdrLum\[i\]\)\s*\*\s*amount", kt)),
           "HdrBaker.kt 缺 (blended - sdrLum[i]) * amount")
 
+    # ---- 目标模式分派（2026-10-26 display 路径）：两端必须同源 ----
+    # 只要有一端漏了，「Python 出增强图、App 出灰图」这种最坏情况就会静默发生。
+    check("targetModeForProfile 存在（py）", "def target_mode_for_profile" in py, "bake.py 缺该函数")
+    check("targetModeForProfile 存在（kt）", "fun targetModeForProfile" in kt, "HdrBaker.kt 缺该函数")
+    py_family = re.search(r'return "sdr" if profile in \((.*?)\)', py)
+    kt_family = re.search(r'profile == "off" \|\| profile == "faithful"', kt)
+    check("targetModeForProfile 归类一致",
+          bool(py_family) and bool(kt_family)
+          and {s.strip().strip('"\'') for s in py_family.group(1).split(",")} == {"off", "faithful"},
+          f"py={py_family.group(1) if py_family else None} kt={'off/faithful' if kt_family else None}")
+
+    # ---- display 目标：log 域几何插值，两端公式必须逐项对得上 ----
+    check("displayTarget 存在（py）", "def _display_target(" in py, "bake.py 缺 _display_target")
+    check("displayTarget 存在（kt）", "fun displayTarget(" in kt, "HdrBaker.kt 缺 displayTarget")
+    check("display 公式为 log 域几何插值（py）",
+          bool(re.search(r"(?:log_sdr|np\.log\(sdr_safe\))\s*\+\s*np\.float32\(amount\)\s*\*\s*"
+                         r"\(np\.log\(mapped_safe\)\s*-\s*(?:log_sdr|np\.log\(sdr_safe\))\)", py)),
+          "bake.py 的 log_target 表达式变了")
+    check("display 公式为 log 域几何插值（kt）",
+          bool(re.search(r"logSdr\s*\+\s*amount\.toDouble\(\)\s*\*\s*"
+                         r"\(logMapped\s*-\s*logSdr\)", kt)),
+          "HdrBaker.kt 的 logTarget 表达式变了")
+    check("display 路径纯黑保持 0（两端）",
+          bool(re.search(r"np\.where\(sdr_lum\s*<=\s*1e-6,\s*0\.0,", py))
+          and bool(re.search(r"if \(sdrLum\s*<=\s*1e-6f\) return 0f", kt)),
+          "纯黑归零逻辑两端不一致")
+
+    # ---- 只有出货档走 display：off/faithful 必须仍落在 legacy 分支 ----
+    check("bake 按模式分支（py）",
+          bool(re.search(r"display_target\s*=\s*target_mode_for_profile\(opt\.profile\)", py))
+          and bool(re.search(r"if display_target:", py)),
+          "bake.py 没按 target_mode 分支")
+    check("bake 按模式分支（kt）",
+          bool(re.search(r"useDisplayTarget\s*=\s*targetModeForProfile\(opt\.profile\)", kt))
+          and bool(re.search(r"if \(useDisplayTarget\)", kt)),
+          "HdrBaker.kt 没按 targetMode 分支")
+
     # faithful 的 LTM 参数：0.97 / 1.08 / 0.70 两个文件都要有
     for name, token_py, token_kt in [
         ("faithful detail_gain 1.08", r"detail_gain=1\.08", r"detailGain\s*=\s*1\.08f"),
