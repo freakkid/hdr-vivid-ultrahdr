@@ -132,30 +132,86 @@ object HdrBaker {
      * 241~255，抬 +0.06 stop 就需靠天花板压缩，hl_spread 0.50→0.21；抬 +0.20
      * 时掉到 0.08（即用户骂过的「层次少」）。高光那点亮度改由 LTM detailGain 带来。
      */
-    private const val TOE_AMP = 0.52f
+    private const val TOE_MAX = 0.52f
     private const val TOE_END = 0.30f
-    private const val SHOULDER_AMP = 0.0f
-    private const val SHOULDER_START = 0.35f
-    /** 额外饱和度（与 opt.saturation 相乘），配平到 sat_ratio ≈1.02。 */
-    private const val SAT_EXTRA = 1.12f
-    /** 高光软天花板：当前 SHOULDER_AMP=0 时不触发，仅作将来调高时的安全网。 */
-    private const val CURVE_CEIL_KNEE = 0.99f
+    private const val LIFT_MAX = 0.18f
+    private const val LIFT_EPS = 0.06f
+    private const val SAT_MAX = 0.14f
+    private const val REF_EXCESS = 1.3f
+    private const val HEADROOM_CEILING = 0.95f
+    private const val HEADROOM_SPAN = 0.25f
+    private const val CURVE_CEIL_KNEE = 0.97f
     private const val CURVE_CEIL = 1.0f
 
-    /** sRGB 码值 → 应施加的 stop 差。 */
-    internal fun hdrCurveDelta(code: Float): Float {
-        val toe = -TOE_AMP * (1f - smoothstep(0f, TOE_END, code))
-        val shoulder = SHOULDER_AMP * smoothstep(SHOULDER_START, 0.95f, code)
-        return toe + shoulder
+    /**
+     * 整张图的「HDR 含量」→ (scale∈[0,1], excess 的 P99)。
+     *
+     * excess = max(HDR 亮度 − 1, 0)：只有这部分是 SDR 图**物理上表现不出来**的内容。
+     * 用 P99 而非 max：单个镜面高光不该决定整图剂量。与 Python
+     * `bake.hdr_content_scale` 同算法（np.percentile 默认线性插值）。
+     */
+    private fun hdrContentScale(lum: FloatArray, n: Int): Pair<Float, Float> {
+        var cnt = 0
+        for (i in 0 until n) if (lum[i] - 1f > 1e-4f) cnt++
+        if (cnt == 0) return 0f to 0f
+        val v = FloatArray(cnt)
+        var j = 0
+        for (i in 0 until n) {
+            val e = lum[i] - 1f
+            if (e > 1e-4f) v[j++] = e
+        }
+        java.util.Arrays.sort(v)
+        val pos = (cnt - 1) * 0.99
+        val lo = pos.toInt().coerceIn(0, cnt - 1)
+        val hi = (lo + 1).coerceAtMost(cnt - 1)
+        val s = v[lo] + (v[hi] - v[lo]) * (pos - lo).toFloat()
+        return s.coerceAtMost(REF_EXCESS) / REF_EXCESS to s
     }
 
     /**
-     * 按亮度查曲线、按比例缩放 RGB（保色相），高光端软收敛。
+     * 逐像素提亮量（stop），由**该像素自己的增益数据**决定，并受头顶空间约束。
      *
-     * 在线性域乘 2^delta（亮度倍率），但天花板判据落在码值域 —— 与 Python
-     * `_apply_hdr_curve` 同一顺序：线性乘 gain → 码值域软收敛 → 回线性。
+     * 两条都满足才发剂量：① 该像素 HDR 真超过 SDR 白点（增益低的地方一分不给）；
+     * ② 8bit 里还有余量（code 越接近 HEADROOM_CEILING 余量越小）。
+     * 没有余量还硬提只会把它推进 255 —— 实测 A@0.70 不给闸门时 hl_spread 0.50→0.17。
      */
-    private fun applyHdrCurve(out: FloatArray, n: Int) {
+    private fun hdrLiftStops(lum: FloatArray, sdrLum: FloatArray, n: Int,
+                             scale: Float, s: Float): FloatArray {
+        val out = FloatArray(n)
+        if (scale <= 0f || s <= 0f) return out
+        val denom = Math.log1p((s / LIFT_EPS).toDouble()).toFloat().coerceAtLeast(1e-6f)
+        var i = 0
+        while (i < n) {
+            val ex = (lum[i] - 1f).coerceAtLeast(0f)
+            if (ex > 0f) {
+                val norm = Math.log1p((ex / LIFT_EPS).toDouble()).toFloat() / denom
+                val code = linToSrgbExact(sdrLum[i].coerceAtLeast(1e-7f))
+                val headroom = ((HEADROOM_CEILING - code) / HEADROOM_SPAN).coerceIn(0f, 1f)
+                out[i] = LIFT_MAX * scale * norm * headroom
+            }
+            i++
+        }
+        return out
+    }
+
+    /** 暗部让位量（负 stop）：只有这张图确实有超白内容时才压暗部。 */
+    private fun hdrToeStops(sdrLum: FloatArray, n: Int, scale: Float): FloatArray {
+        val out = FloatArray(n)
+        if (scale <= 0f) return out
+        var i = 0
+        while (i < n) {
+            val code = linToSrgbExact(sdrLum[i].coerceAtLeast(1e-7f))
+            out[i] = -TOE_MAX * scale * (1f - smoothstep(0f, TOE_END, code))
+            i++
+        }
+        return out
+    }
+
+    /**
+     * 施加总剂量：按亮度乘 2^delta（线性域，才等于「亮 k 倍」），高光端软收敛。
+     * 天花板判据落在码值域（人眼与直方图都是码值）。与 Python `_apply_hdr_curve` 同序。
+     */
+    private fun applyHdrCurve(out: FloatArray, lift: FloatArray, toe: FloatArray, n: Int) {
         var i = 0
         while (i < n) {
             val lr = out[i * 3]
@@ -163,12 +219,7 @@ object HdrBaker {
             val lb = out[i * 3 + 2]
             val lum = 0.2126f * lr + 0.7152f * lg + 0.0722f * lb
             if (lum > 1e-7f) {
-                // 这里用**精确公式**而不是 4096 项 LUT：曲线一次要做 lin→srgb→
-                // lin 两个往返，LUT 的最近邻误差会被 2^delta 放大，实测让
-                // 像素对照的均值差从 0.2 涨到 1.2（超阈值）。每像素 3 次 pow，
-                // 相对 LTM 的 guided filter 成本可忽略。
-                val code = linToSrgbExact(lum)
-                val gain = Math.pow(2.0, hdrCurveDelta(code).toDouble()).toFloat()
+                val gain = Math.pow(2.0, (lift[i] + toe[i]).toDouble()).toFloat()
                 val liftedCode = softKnee(linToSrgbExact(lum * gain), CURVE_CEIL_KNEE, CURVE_CEIL)
                 val scale = srgbToLinExact(liftedCode) / lum
                 out[i * 3] = lr * scale
@@ -284,6 +335,18 @@ object HdrBaker {
         // 5) 色调映射 → 显示线性域 out（w*h*3，值域 [0,1] 附近）
         //    关键：按 SDR 亮度加权。SDR 暗部/中间调保持原样，只有亮部才采信 HDR 结果，
         //    否则增益图（全图有值）会把整幅画面提亮 —— 观感与手机上的 HDR 不一致。
+        val useCurve = targetModeForProfile(opt.profile) == "display"
+        // 显示档的剂量全部由增益数据推出（见 hdrLiftStops 注释），sdr 档一律 0。
+        var curveLift = FloatArray(0)
+        var curveToe = FloatArray(0)
+        var curveScale = 0f
+        if (useCurve) {
+            val (sc, sv) = hdrContentScale(lum, n)
+            curveScale = sc
+            curveLift = hdrLiftStops(lum, sdrLum, n, sc, sv)
+            curveToe = hdrToeStops(sdrLum, n, sc)
+        }
+
         val ltmParams = LocalToneMapping.paramsForProfile(opt.profile)
         var ltmStats: LocalToneMapping.Stats? = null
         val out: FloatArray
@@ -295,7 +358,6 @@ object HdrBaker {
         val amount = opt.strength.coerceIn(0f, 1f)
         // 目标模式：出货档走 display（几何插值，带 HDR 亮度结构），
         // off/faithful 走 sdr（锚回底图，旧行为）。见 targetModeForProfile。
-        val useCurve = targetModeForProfile(opt.profile) == "display"
         if (ltmParams != null) {
             val ltmResult = LocalToneMapping.apply(hdr, lum, w, h, white, ltmParams)
             val mapped = ltmResult.out
@@ -356,7 +418,7 @@ object HdrBaker {
 
         // 5.5) HDR 观感曲线（display 档）：在底色映射之后、量化之前做 stop 域对比扩张。
         //      暗部更黑、饱和稍足；高光段当前取 0（见 hdrCurveDelta 注释）。
-        if (useCurve) applyHdrCurve(out, n)
+        if (useCurve) applyHdrCurve(out, curveLift, curveToe, n)
 
         // 6) 收尾：线性 → sRGB →（sRGB 域）S 曲线 + 饱和度 → 抖动 → 8bit
         val rng = Random(0) // 固定种子：同参数输出确定性（Golden-file 对照前提）
@@ -380,7 +442,7 @@ object HdrBaker {
                 g = clamp01((g - 0.5f) * opt.contrast + 0.5f)
                 b = clamp01((b - 0.5f) * opt.contrast + 0.5f)
             }
-            val satEff = opt.saturation * (if (useCurve) SAT_EXTRA else 1f)
+            val satEff = opt.saturation * (1f + SAT_MAX * curveScale)
             if (satEff != 1f) {
                 val l2 = 0.2126f * r + 0.7152f * g + 0.0722f * b
                 r = clamp01(l2 + (r - l2) * satEff)

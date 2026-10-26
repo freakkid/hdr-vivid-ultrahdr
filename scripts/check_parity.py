@@ -81,40 +81,45 @@ def main() -> int:
           and {s.strip().strip('"\'') for s in py_family.group(1).split(",")} == {"off", "faithful"},
           f"py={py_family.group(1) if py_family else None} kt={'off/faithful' if kt_family else None}")
 
-    # ---- HDR 观感曲线：常量与公式逐项对账 ----
-    check("hdrCurveDelta 存在（py）", "def hdr_curve_delta(" in py, "bake.py 缺 hdr_curve_delta")
-    check("hdrCurveDelta 存在（kt）", "fun hdrCurveDelta(" in kt, "HdrBaker.kt 缺 hdrCurveDelta")
-    check("applyHdrCurve 存在（py）", "def _apply_hdr_curve(" in py, "bake.py 缺 _apply_hdr_curve")
-    check("applyHdrCurve 存在（kt）", "fun applyHdrCurve(" in kt, "HdrBaker.kt 缺 applyHdrCurve")
+    # ---- 增益驱动剂量：函数与常量逐项对账 ----
+    for name, py_tok, kt_tok in [
+        ("hdr_content_scale", "def hdr_content_scale(", "fun hdrContentScale("),
+        ("hdr_lift_stops", "def hdr_lift_stops(", "fun hdrLiftStops("),
+        ("hdr_toe_stops", "def hdr_toe_stops(", "fun hdrToeStops("),
+        ("apply_hdr_curve", "def _apply_hdr_curve(", "fun applyHdrCurve("),
+    ]:
+        check(f"{name} 存在", py_tok in py and kt_tok in kt,
+              f"py={py_tok in py} kt={kt_tok in kt}")
 
     curve_pairs = [
-        ("toe_amp", r'"toe_amp":\s*([\d.]+)', r"TOE_AMP\s*=\s*([\d.]+)f"),
+        ("toe_max", r'"toe_max":\s*([\d.]+)', r"TOE_MAX\s*=\s*([\d.]+)f"),
         ("toe_end", r'"toe_end":\s*([\d.]+)', r"TOE_END\s*=\s*([\d.]+)f"),
-        ("shoulder_amp", r'"shoulder_amp":\s*([\d.]+)', r"SHOULDER_AMP\s*=\s*([\d.]+)f"),
-        ("shoulder_start", r'"shoulder_start":\s*([\d.]+)', r"SHOULDER_START\s*=\s*([\d.]+)f"),
-        ("sat_extra", r'"sat_extra":\s*([\d.]+)', r"SAT_EXTRA\s*=\s*([\d.]+)f"),
+        ("lift_max", r'"lift_max":\s*([\d.]+)', r"LIFT_MAX\s*=\s*([\d.]+)f"),
+        ("lift_eps", r'"lift_eps":\s*([\d.]+)', r"LIFT_EPS\s*=\s*([\d.]+)f"),
+        ("sat_max", r'"sat_max":\s*([\d.]+)', r"SAT_MAX\s*=\s*([\d.]+)f"),
+        ("ref_excess", r'"ref_excess":\s*([\d.]+)', r"REF_EXCESS\s*=\s*([\d.]+)f"),
+        ("headroom_ceiling", r'"headroom_ceiling":\s*([\d.]+)',
+         r"HEADROOM_CEILING\s*=\s*([\d.]+)f"),
+        ("headroom_span", r'"headroom_span":\s*([\d.]+)', r"HEADROOM_SPAN\s*=\s*([\d.]+)f"),
         ("ceil_knee", r"CURVE_CEIL_KNEE\s*=\s*([\d.]+)", r"CURVE_CEIL_KNEE\s*=\s*([\d.]+)f"),
         ("ceil", r"CURVE_CEIL\s*=\s*([\d.]+)", r"CURVE_CEIL\s*=\s*([\d.]+)f"),
     ]
     for name, pat_py, pat_kt in curve_pairs:
         a, b = num(py, pat_py), num(kt, pat_kt)
-        check(f"HDR 曲线 {name}", a is not None and b is not None and abs(a - b) < 1e-6,
+        check(f"剂量常量 {name}", a is not None and b is not None and abs(a - b) < 1e-6,
               f"py={a} kt={b}")
 
-    # 曲线公式两端同形：−toe×(1−smoothstep(0,toe_end,v)) + shoulder×smoothstep(...)
-    check("曲线公式（py）",
-          bool(re.search(r"-c\[\"toe_amp\"\]\s*\*\s*\(1\.0\s*-\s*_smoothstep\(", py)),
-          "bake.py 的 toe 表达式变了")
-    check("曲线公式（kt）",
-          bool(re.search(r"-TOE_AMP\s*\*\s*\(1f\s*-\s*smoothstep\(", kt)),
-          "HdrBaker.kt 的 toe 表达式变了")
-    check("曲线按亮度缩放 RGB（py）",
-          bool(re.search(r"_linear_to_srgb\(lum\)", py)) and "_apply_hdr_curve" in py,
-          "bake.py 曲线没有按亮度查表")
-    check("曲线按亮度缩放 RGB（kt）",
-          bool(re.search(r"linToSrgb(?:Exact)?\(lum\)", kt)),
-          "HdrBaker.kt 曲线没有按亮度查表")
-    # 曲线的 lin↔srgb 往返必须走精确公式：LUT 最近邻误差会被 2^delta 放大
+    # 剂量必须「按增益」算：两端都得用 HDR 亮度减白点，而不是按码值查表
+    check("lift 由增益推出（py）",
+          bool(re.search(r"ex\s*=\s*np\.maximum\(lum\s*-\s*1\.0,\s*0\.0\)", py)),
+          "bake.py 的 lift 没用 excess = max(HDR-1,0)")
+    check("lift 由增益推出（kt）",
+          bool(re.search(r"val ex = \(lum\[i\] - 1f\)", kt)),
+          "HdrBaker.kt 的 lift 没用 excess = max(HDR-1,0)")
+    check("lift 受头顶空间约束（py）", "headroom_ceiling" in py and "headroom_span" in py,
+          "bake.py 缺头顶空间闸门")
+    check("lift 受头顶空间约束（kt）", "HEADROOM_CEILING" in kt and "HEADROOM_SPAN" in kt,
+          "HdrBaker.kt 缺头顶空间闸门")
     check("曲线用精确 sRGB 转换（kt）",
           "fun linToSrgbExact(" in kt and "fun srgbToLinExact(" in kt,
           "HdrBaker.kt 曲线仍在用 LUT（会把像素对照推到 mean>1.0）")

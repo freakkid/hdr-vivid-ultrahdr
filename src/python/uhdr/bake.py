@@ -130,69 +130,109 @@ def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
-# HDR 观感曲线（仅 display 档）。
+# HDR 观感映射（仅 display 档）—— **每一个像素的提亮量由它自己的增益数据决定**。
 #
-# 参数不是调出来的，是**从用户手机截图反解**的：他把「有 HDR 效果」和「平淡 SDR」
-# 两版放在手机相册的「图片对比」里，两格逐像素配准后（相关系数 1.0000，纯色调差），
-# 按源亮度 16 档统计带符号的 stop 差，得到：
-#     L≈  8  −0.34 stop      L≈ 55  −0.01（枢轴）
-#     L≈120  +0.01           L≈232  +0.12 stop      饱和 x1.045
-# 同一结论独立出现在增益图真值分析里（`out/visual/diag/probe_gain.py`）：
-# 真正超过 SDR 白点的像素只有 13~23%，所以「HDR 效果」是**对比扩张**，
-# 不是整体提亮 —— 中位亮度必须原地不动。
+# 为什么必须是「按增益算」而不是「一条固定曲线」：
+#   增益图给的是每个像素的信噪比：`HDR = (SDR + off_sdr) × 2^log_boost − off_hdr`。
+#   实测三个样本「超出 SDR 白点」的部分（excess = max(HDR−1, 0)）P99 分别是
+#   1.34 / 1.69 / 3.38 —— 差 2.5 倍。用一条按 sRGB 码值查的固定曲线，等于给三张
+#   需求完全不同的图套同一剂量：C 那种头上有 3.4 倍空间的图远远没用够，A 那种
+#   只有 1.3 倍的反而被过量提亮。0.1.24/0.1.25 都犯了这个错。
 #
-# 参数含义（stop 域，自变量是 sRGB 码值 v∈[0,1]）：
-#     delta(v) = −toe_amp × (1 − smoothstep(0, toe_end, v))
-#                + shoulder_amp × smoothstep(shoulder_start, 0.95, v)
-#     out = in × 2^delta
-# toe_amp / toe_end 决定暗部压多少、在多暗处衰减完；shoulder_amp / shoulder_start
-# 决定高光提多少、从哪开始爬升。枢轴（两条都近似 0 的位置）落在 v≈0.22~0.35，
-# 即 L≈55~90 —— 中间调完全不动。
+# 三条量全部从增益数据推出：
+#   1) 逐像素提亮：谁的 HDR 超出白点多，谁拿到的提亮多（对数压缩，避免爆）
+#        lift(p) = lift_max × scale × log1p(excess(p)/eps) / log1p(S/eps)
+#   2) 暗部让位：整张图有多少东西压在白点之上，才需要多深的 toe
+#        toe = −toe_max × scale × (1 − smoothstep(0, toe_end, code))
+#   3) 饱和度：同样按 scale 给，避免「本来就没什么 HDR 内容」的图被加艳
+#   其中 S = excess 的 P99（该图真实头量），scale = clip(S/ref_S, 0, 1)。
+#
+# 三个样本的 S 对应 scale：A 0.67 / B 0.84 / C 1.00（ref_S = 2.0）——
+# 这样 C 的 LED 那种 4.4× 的像素拿满剂量，A 的汤面只拿 2/3。
 HDR_CURVE = {
-    "toe_amp": 0.52,
-    "toe_end": 0.30,
-    # 高光段设 0：实测做不到「高光 +8%」与「保层次」并存。
-    # 源图高光已占 241~255，任何 +0.06 stop 以上的抬升都必须先靠天花板压缩，
-    # 实测 hl_spread 从 0.50 掉到 0.21~0.25（+0.06）、0.08（+0.20），
-    # 正是用户 0.1.22 骂的「层次少」。宁可不抬，抬了就必然平。
-    # 高光那点亮度改由 LTM detail_gain 带来（实测 +2~4%，层次不掉）。
-    "shoulder_amp": 0.0,
-    "shoulder_start": 0.35,
-    # 额外饱和度（与 opt.saturation 相乘）。截图实测上格/下格 = 1.045，
-    # 但曲线本身会稀释 HSV 饱和度指标，故按实测配平到 sat_ratio ≈1.02。
-    "sat_extra": 1.12,
+    "toe_max": 0.52,      # 暗部最大压暗（stop，scale=1 时）
+    "toe_end": 0.30,      # 压暗段在 sRGB 码值 0~0.30 之间衰减到 0
+    "lift_max": 0.18,     # 超白像素最大提亮（stop，scale=1 且 excess=S 时）
+    "lift_eps": 0.06,      # 超出量的软膝尺度（线性亮度）
+    "sat_max": 0.14,      # 最大额外饱和度（比例，scale=1 时）
+    # 参考值按**出货强度 0.70** 标定：strength 会缩增益，P99 excess 实测
+    # A 0.81 / B ~1.0 / C ~2.0（strength 1.0 时 A 1.34 / B 1.69 / C 3.38）。
+    # 取 1.3 使 A 拿 0.62、B 0.77、C 1.00 —— 保住三张图之间的剂量差异。
+    "ref_excess": 1.3,
+    # 头顶空间闸门（sRGB 码值）：code ≥ ceiling 时余量为 0，code ≤ ceiling−span 时满额。
+    # 0.95 / 0.25 → code 0.70 以下满额、0.90 处仅 20%、0.95 以上完全不给。
+    # 这样剂量落在「高光下沿」（真有 HDR 余量、8bit 也还有位置），而不是正在
+    # 逼近 255 的最亮像素上 —— 否则加多少就压平多少（实测 A@0.70 spread 0.50→0.17）。
+    "headroom_ceiling": 0.95,
+    "headroom_span": 0.25,
 }
 
-
-def hdr_curve_delta(code: np.ndarray) -> np.ndarray:
-    """sRGB 码值（0~1）→ 应施加的 stop 差。display 档专用。"""
-    c = HDR_CURVE
-    toe = -c["toe_amp"] * (1.0 - _smoothstep(0.0, c["toe_end"], code))
-    shoulder = c["shoulder_amp"] * _smoothstep(c["shoulder_start"], 0.95, code)
-    return (toe + shoulder).astype(np.float32)
-
-
-# 高光软天花板：曲线把高光往上推之后必须收敛到这里，不能只靠 [0,1] 硬裁。
-# 依据同样是截图实测：上格在 L 224~239 档被推到 ~246、240~255 档停在 ~249，
-# 也就是「压进 246~250 这一窄带」而不是顶到 255。硬裁的话 224~239 整段会
-# 直接变纯白（实测 A 样本 clip_delta +4.3 个百分点、高光层次 0.50→0.25）。
-# 收敛到 0.985（≈251）留 4 个码值给最亮像素拉开差距。
-# 当前 shoulder_amp=0，天花板实际不触发，只作为「将来有人调高 shoulder_amp」
-# 时的安全网（避免直接硬裁到 255）。
-CURVE_CEIL_KNEE = 0.99
+# 高光软天花板：提亮之后必须收敛到这里，不能只靠 [0,1] 硬裁。
+# 依据是用户手机截图实测：上格在 L 224~239 档被推到 ~246、240~255 档停在 ~249，
+# 即「压进 246~250 这窄带」而不是顶到 255。硬裁会把整段推成纯白
+# （实测 A 样本 clip_delta +4.3 个百分点、高光层次 0.50→0.25）。
+CURVE_CEIL_KNEE = 0.97
 CURVE_CEIL = 1.0
 
 
-def _apply_hdr_curve(out_linear: np.ndarray) -> np.ndarray:
-    """按亮度查曲线、按比例缩放 RGB（保色相），高光端软收敛。
+def hdr_content_scale(hdr_linear: np.ndarray) -> tuple[float, float]:
+    """整张图的「HDR 含量」→ (scale∈[0,1], excess 的 P99)。
 
-    为什么在**线性**域乘：2^delta 是亮度倍率，乘在线性光上才等价于「亮 k 倍」；
-    乘在 sRGB 码值上会变成非线性缩放，暗部被压得过狠。但天花板判据要落在
-    **码值域**（人眼/直方图都是码值），故：线性乘 gain → 码值域软收敛 → 回线性。
+    excess = max(HDR 亮度 − 1, 0)：只有这部分是 SDR 图**物理上表现不出来**的内容。
+    用 P99 而不是 max：单个镜面高光不该决定整图的剂量。
+    """
+    lum = np.maximum((hdr_linear * _LUMA).sum(axis=2), 0.0)
+    ex = lum - 1.0
+    m = ex > 1e-4
+    if not np.any(m):
+        return 0.0, 0.0
+    s = float(np.percentile(ex[m], 99))
+    return float(np.clip(s / HDR_CURVE["ref_excess"], 0.0, 1.0)), s
+
+
+def hdr_lift_stops(hdr_linear: np.ndarray, sdr_lum: np.ndarray,
+                   scale: float, s: float) -> np.ndarray:
+    """逐像素提亮量（stop），由**该像素自己的增益数据**决定，并且受头顶空间约束。
+
+    两条都要满足才发剂量：
+      1. 该像素 HDR 真的超过 SDR 白点（excess > 0）—— 增益低的地方一分不给。
+         0.1.24 恰好相反：给暗部（增益最低处）发剂量，所以正相关是负的。
+      2. 该像素在 8bit 里**还有余量**（code 越接近 1，余量越小）。没有余量还硬提，
+         只能把它推进 255 —— 实测 A@0.70 不给闸门时 hl_spread 从 0.42 掉到 0.17。
+         这不是参数问题：手机 HDR 屏能显示「比白更亮」，8bit JPEG 不能。
+    """
+    if scale <= 0.0 or s <= 0.0:
+        return np.zeros(hdr_linear.shape[:2], dtype=np.float32)
+    lum = np.maximum((hdr_linear * _LUMA).sum(axis=2), 0.0)
+    ex = np.maximum(lum - 1.0, 0.0)
+    eps = HDR_CURVE["lift_eps"]
+    norm = np.log1p(ex / eps) / max(float(np.log1p(s / eps)), 1e-6)
+    # 可用余量：code ≥ 1 时为 0，code ≤ headroom_free 时为满额
+    code = _linear_to_srgb(np.maximum(sdr_lum, 1e-7))
+    headroom = np.clip((HDR_CURVE["headroom_ceiling"] - code)
+                       / max(HDR_CURVE["headroom_span"], 1e-3), 0.0, 1.0)
+    return (HDR_CURVE["lift_max"] * scale * norm * headroom).astype(np.float32)
+
+
+def hdr_toe_stops(code: np.ndarray, scale: float) -> np.ndarray:
+    """暗部让位量（负 stop）：只有这张图确实有超白内容时才压暗部。"""
+    if scale <= 0.0:
+        return np.zeros_like(code, dtype=np.float32)
+    return (-HDR_CURVE["toe_max"] * scale
+            * (1.0 - _smoothstep(0.0, HDR_CURVE["toe_end"], code))).astype(np.float32)
+
+
+def _apply_hdr_curve(out_linear: np.ndarray, lift: np.ndarray, toe: np.ndarray) -> np.ndarray:
+    """按亮度查总剂量、按比例缩放 RGB（保色相），高光端软收敛。
+
+    为什么乘在**线性**域：2^delta 是亮度倍率，乘在线性光上才等于「亮 k 倍」；
+    乘在 sRGB 码值上会变成非线性缩放，暗部被压得过狠。天花板判据则落在码值域
+    （人眼与直方图都是码值）：线性乘 gain → 码值域软收敛 → 回线性。
     """
     lum = np.maximum((out_linear * _LUMA).sum(axis=2), 1e-7)
     code = _linear_to_srgb(lum)
-    gain = np.power(2.0, hdr_curve_delta(code)).astype(np.float32)
+    delta = (lift + toe).astype(np.float32)
+    gain = np.power(2.0, delta).astype(np.float32)
     lifted = _srgb_to_linear(_soft_knee(_linear_to_srgb(lum * gain),
                                        CURVE_CEIL_KNEE, CURVE_CEIL))
     scale = (lifted / lum).astype(np.float32)
@@ -304,8 +344,16 @@ def bake(
     peak = float(lum.max())
 
     ltm_stats: dict = {}
-    ltm_p = ltm.params_for_profile(opt.profile)
     use_curve = target_mode_for_profile(opt.profile) == "display"
+    ltm_p = ltm.params_for_profile(opt.profile)
+    # 显示档的剂量全部由增益数据推出（见 HDR_CURVE 注释），sdr 档一律 0。
+    curve_lift = curve_toe = None
+    curve_scale = 0.0
+    if use_curve:
+        curve_scale, _curve_s = hdr_content_scale(hdr)
+        curve_lift = hdr_lift_stops(hdr, sdr_lum, curve_scale, _curve_s)
+        curve_toe = hdr_toe_stops(_linear_to_srgb(
+            np.maximum(sdr_lum, 1e-7)), curve_scale)
     if ltm_p is not None:
         # 局部色调映射：输出已经是「1.0 = SDR 白点」的显示线性域。
         ltm_res = ltm.apply(hdr, white, ltm_p)
@@ -337,7 +385,7 @@ def bake(
     # 放在这里是因为它必须作用在「已经锚定过底图」的亮度上，且要在裁切统计之后，
     # 否则会把曲线带来的高光溢出算成色调映射的裁切。
     if use_curve:
-        out = np.clip(_apply_hdr_curve(out), 0.0, 1.0)
+        out = np.clip(_apply_hdr_curve(out, curve_lift, curve_toe), 0.0, 1.0)
 
     # 裁切率：**按单通道**统计压缩前的 >1。用亮度判会恒为 0（亮度被归一化到 target ≤ 1），
     # 但单通道确实会溢出（scale>1 时主导通道先超），与 Kotlin 的统计口径一致。
@@ -350,7 +398,7 @@ def bake(
     # 「暗部 19.2 → 0.7」的根因，与 anchor 无关。
     if opt.contrast != 1.0:
         srgb = np.clip((srgb - 0.5) * opt.contrast + 0.5, 0.0, 1.0)
-    sat_eff = opt.saturation * (HDR_CURVE["sat_extra"] if use_curve else 1.0)
+    sat_eff = opt.saturation * (1.0 + HDR_CURVE["sat_max"] * curve_scale)
     if sat_eff != 1.0:
         l2 = (srgb * _LUMA).sum(axis=2, keepdims=True)
         srgb = np.clip(l2 + (srgb - l2) * sat_eff, 0.0, 1.0)
