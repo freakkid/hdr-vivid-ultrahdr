@@ -90,24 +90,29 @@ except Exception:  # pragma: no cover - 缺依赖时退化为 numpy 版
 # 只有 `*_max` = 对称口径（|实测值| ≤ max），这是 legacy 的老语义。
 # ---------------------------------------------------------------------------
 DISPLAY_THRESHOLDS = {
-    # ---- 增强带（下限拦「没效果」，上限拦失控提亮）----
-    "median_delta_min": 10.0,
-    "median_delta_max": 45.0,
-    "mean_delta_min": 8.0,
-    "mean_delta_max": 40.0,
-    "shadow_lift_min": 1.15,
-    "shadow_lift_max": 2.10,
+    # ---- 增强带（2026-10-26 第三次修订：从「整体更亮」改为「对比扩张」）----
+    # 依据有两条独立来源，结论一致：
+    #   1) 用户手机截图「图片对比」两格反解：中位不动、暗部更深、高光更亮、饱和更足；
+    #   2) 增益图真值：真正超 SDR 白点的像素只有 13~23%，物理上不支持「整体提亮」。
+    # 所以显示档的硬签名是 **shadow_lift < 1.0**（比底图更暗），而不是更亮。
+    "median_delta_min": -3.0,
+    "median_delta_max": 8.0,
+    "mean_delta_min": 0.5,
+    "mean_delta_max": 8.0,
+    # 暗部必须比底图更暗（实测 0.909~0.992）；上限 1.00 直接排除「抬暗部」的旧路线
+    # （0.1.24 曾做到 1.88 —— 画面发蒙的根因）。下限 0.88 防压得发黑。
+    "shadow_lift_min": 0.88,
+    "shadow_lift_max": 1.00,
     # ---- 自然护栏 ----
-    "clip_ratio_max": 0.01,       # 近纯白像素占比比源多多少
-    "ssim_min": 0.88,
-    # 饱和度下限：v0.1.21 就是因为这里没有下限，丢了 Display P3 的 ICC 后
-    # 饱和度掉到 0.873 却仍然全绿，发出去才发现「烘焙图比原图灰」。
-    "sat_ratio_min": 0.90,
+    "clip_ratio_max": 0.01,
+    "ssim_min": 0.93,
+    "sat_ratio_min": 1.00,   # 曲线带 1.12 倍额外饱和，实测 1.02~1.11
     "sat_ratio_max": 1.15,
-    # 层次：见模块 docstring「几条容易踩的判断」
-    "hl_spread_min": 0.45,
-    "hl_hf_min": 0.55,
-    "hf_all_min": 0.92,
+    # 层次：高光段提亮会压平，故 shoulder_amp 取 0（见 bake.HDR_CURVE 注释），
+    # 这三条下限继续守着「不许把高光拍平」。
+    "hl_spread_min": 0.40,
+    "hl_hf_min": 0.70,
+    "hf_all_min": 0.95,
 }
 
 LEGACY_THRESHOLDS = {
@@ -129,7 +134,20 @@ LEGACY_THRESHOLDS = {
     "hf_all_min": 0.95,
 }
 
-THRESHOLDS = {"display": DISPLAY_THRESHOLDS, "legacy": LEGACY_THRESHOLDS}
+# 合成样本（uhdr.synthetic 的极端高对比测试图）不是照片：大块纯黑/纯白平台，
+# 中位、均值、暗部这些**摄影口径**的指标在上面没有意义（提亮/压暗都只作用在
+# 边缘过渡带上）。所以它只做「结构保真」验收：不许爆白、不许走样、不许丢 ICC，
+# 增强带放宽为「不崩」。真实照片仍走完整的显示档阈值。
+DISPLAY_STRUCT_THRESHOLDS = dict(
+    DISPLAY_THRESHOLDS,
+    median_delta_min=-20.0, median_delta_max=20.0,
+    mean_delta_min=-10.0, mean_delta_max=15.0,
+    shadow_lift_min=0.75, shadow_lift_max=1.25,
+    sat_ratio_min=0.95, sat_ratio_max=1.25,
+)
+
+THRESHOLDS = {"display": DISPLAY_THRESHOLDS, "legacy": LEGACY_THRESHOLDS,
+              "display_struct": DISPLAY_STRUCT_THRESHOLDS}
 
 # 层次下限（hl_spread / hl_hf）只对**出货 profile** 生效。`off` 是 A/B 对照旧行为，
 # 不代表出货物性（其 0.70 档高光分位距低至 0.33，是旧行为的已知特性）。
@@ -145,8 +163,11 @@ def baseline_for(profile: str) -> str:
     return "legacy" if bake.target_mode_for_profile(profile) == "sdr" else "display"
 
 
-def thresholds_for(profile: str) -> dict:
-    return THRESHOLDS[baseline_for(profile)]
+def thresholds_for(profile: str, synthetic_sample: bool = False) -> dict:
+    base = baseline_for(profile)
+    if base == "display" and synthetic_sample:
+        return DISPLAY_STRUCT_THRESHOLDS
+    return THRESHOLDS[base]
 
 
 def _saturation(img: Image.Image) -> float:
@@ -236,13 +257,13 @@ def _band(bad: list[str], label: str, value: float, th: dict, key: str,
         bad.append("%s %s 超过上限 %s%s" % (label, fmt % v, fmt.strip("+") % hi_v, why))
 
 
-def judge(m: dict, profile: str) -> list[str]:
+def judge(m: dict, profile: str, synthetic_sample: bool = False) -> list[str]:
     """返回失败原因列表；空表示 PASS。
 
     基准按 profile 自动分派（display / legacy），不再由调用方传阈值 ——
     传阈值容易让「同一个 profile 在不同调用点用不同口径」。
     """
-    th = thresholds_for(profile)
+    th = thresholds_for(profile, synthetic_sample)
     bad: list[str] = []
 
     # ---- 亮度：display 是双向带宽，legacy 是对称偏差 ----
@@ -334,7 +355,7 @@ def run(real_paths: list[str], as_json: bool, update: bool) -> int:
     for cid, path, profile, strength in cases:
         src = vivid_source.parse_file(path)
         sdr, _out, m = bake_and_measure(src, profile, strength)
-        bad = judge(m, profile)
+        bad = judge(m, profile, synthetic_sample=cid.startswith("synthetic/"))
         failures += bool(bad)
         rows.append({
             "case": cid, "profile": profile, "strength": strength,

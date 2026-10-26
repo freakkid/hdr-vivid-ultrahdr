@@ -74,13 +74,16 @@ class BakeOptions:
 def target_mode_for_profile(profile: str) -> str:
     """profile → 色调映射目标模式。两端（Python/Kotlin）的唯一来源。
 
-    display = 显示导向：目标即 LTM/全局映射结果本身，按 strength 在 log 亮度域
-               向 SDR 底图几何插值（strength 0 → 等同底图，1 → 完整映射结果）。
-               local/wechat 走这条 —— 烘焙图要带的是手机上 HDR 显示的亮度结构，
-               不是平坦的 SDR 底图。
-    sdr     = 底图锚定（旧行为）：按 sdr_lum 分流混合 + 增量缩放 + lift_cap。
-               off 是 A/B 对照旧行为，faithful 是「嫌亮」用户的不提亮逃生阀，
-               两档都明确承诺「不改变整体明暗」，必须留在旧路径。
+    display = 显示导向（local/wechat，出货默认）：底图锚定 + **HDR 观感曲线**。
+               前半段与 sdr 一样按 sdr_lum 分流，保证中间调不动；曲线（见
+               HDR_CURVE）在其后再做一次 stop 域的 S 形对比扩张：
+               暗部更黑、高光更亮、饱和更足 —— 这正是增益图给出的真实差异。
+    sdr     = 纯底图锚定（旧行为，不加曲线）。off 是 A/B 对照，faithful 是
+               「嫌亮」用户的不提亮逃生阀 —— 两档都必须保持「不改变整体明暗」。
+
+    注：2026-10-26 曾走过一版「log 域几何插值」的 display，实测把 LTM 的暗部抬升
+    整条继承下来（暗部 ×1.88、高光 ×1.06），动态范围不增反降 → 画面发蒙，
+    已废弃。判据：输出增益与增益图真值的相关系数须为正（几何插值版为 −0.89）。
     """
     return "sdr" if profile in ("off", "faithful") else "display"
 
@@ -127,40 +130,73 @@ def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
     return (t * t * (3.0 - 2.0 * t)).astype(np.float32)
 
 
-def _display_target(
-    sdr_lum: np.ndarray,
-    mapped_lum: np.ndarray,
-    lum: np.ndarray,
-    amount: float,
-    white: float = 1.0,
-) -> np.ndarray:
-    """显示导向目标：log 亮度域把 SDR 底图按 amount 几何插值到 HDR 映射结果。
+# HDR 观感曲线（仅 display 档）。
+#
+# 参数不是调出来的，是**从用户手机截图反解**的：他把「有 HDR 效果」和「平淡 SDR」
+# 两版放在手机相册的「图片对比」里，两格逐像素配准后（相关系数 1.0000，纯色调差），
+# 按源亮度 16 档统计带符号的 stop 差，得到：
+#     L≈  8  −0.34 stop      L≈ 55  −0.01（枢轴）
+#     L≈120  +0.01           L≈232  +0.12 stop      饱和 x1.045
+# 同一结论独立出现在增益图真值分析里（`out/visual/diag/probe_gain.py`）：
+# 真正超过 SDR 白点的像素只有 13~23%，所以「HDR 效果」是**对比扩张**，
+# 不是整体提亮 —— 中位亮度必须原地不动。
+#
+# 参数含义（stop 域，自变量是 sRGB 码值 v∈[0,1]）：
+#     delta(v) = −toe_amp × (1 − smoothstep(0, toe_end, v))
+#                + shoulder_amp × smoothstep(shoulder_start, 0.95, v)
+#     out = in × 2^delta
+# toe_amp / toe_end 决定暗部压多少、在多暗处衰减完；shoulder_amp / shoulder_start
+# 决定高光提多少、从哪开始爬升。枢轴（两条都近似 0 的位置）落在 v≈0.22~0.35，
+# 即 L≈55~90 —— 中间调完全不动。
+HDR_CURVE = {
+    "toe_amp": 0.52,
+    "toe_end": 0.30,
+    # 高光段设 0：实测做不到「高光 +8%」与「保层次」并存。
+    # 源图高光已占 241~255，任何 +0.06 stop 以上的抬升都必须先靠天花板压缩，
+    # 实测 hl_spread 从 0.50 掉到 0.21~0.25（+0.06）、0.08（+0.20），
+    # 正是用户 0.1.22 骂的「层次少」。宁可不抬，抬了就必然平。
+    # 高光那点亮度改由 LTM detail_gain 带来（实测 +2~4%，层次不掉）。
+    "shoulder_amp": 0.0,
+    "shoulder_start": 0.35,
+    # 额外饱和度（与 opt.saturation 相乘）。截图实测上格/下格 = 1.045，
+    # 但曲线本身会稀释 HSV 饱和度指标，故按实测配平到 sat_ratio ≈1.02。
+    "sat_extra": 1.12,
+}
 
-        target = exp(ln sdr + amount × (ln mapped − ln sdr))
 
-    为什么用几何（log 域）插值而不是线性：
-      1. 亮度是乘性感知量。线性插值按绝对差值分配，暗部的 HDR 增量绝对值小、
-         会被摁死；几何插值按比例缩放，暗部也拿到成比例的提亮；
-      2. amount=0 精确回到底图亮度（strength 滑杆底端 = 无效果），
-         amount=1 精确等于映射结果 —— 两端行为可预期，滑杆语义即「HDR 剂量」；
-      3. 映射结果 ≤1（LTM ceiling 钳制），插值结果 ≤ sdr^(1−amount) ≤ 1，
-         天然不会过曝，不需要逐像素 lift_cap。
+def hdr_curve_delta(code: np.ndarray) -> np.ndarray:
+    """sRGB 码值（0~1）→ 应施加的 stop 差。display 档专用。"""
+    c = HDR_CURVE
+    toe = -c["toe_amp"] * (1.0 - _smoothstep(0.0, c["toe_end"], code))
+    shoulder = c["shoulder_amp"] * _smoothstep(c["shoulder_start"], 0.95, code)
+    return (toe + shoulder).astype(np.float32)
 
-    纯黑像素（源亮度 ≤1e-6，即 sRGB 0）保持 0：LTM 的局部提亮会把纯黑邻域
-    一起抬起（夜模式式），几何插值会把它们保留成灰黑，这里显式摁回纯黑，
-    与 sdr 路径（smoothstep 在 0 处权重为 0，黑位不变）行为一致。
 
-    试过并否决：超白像素豁免收缩（直接采信映射结果）。实测 hl_spread 从 0.50
-    掉到 0.17~0.29 —— 豁免后输出全跟随肩部压缩区间（传递函数斜率仅 0.15），
-    底图锚定带来的源变化反而更多。几何插值本身已是高光区保层次的最优形式。
-    （lum/white 入参保留给将来的传递函数实验，当前实现不使用。）
+# 高光软天花板：曲线把高光往上推之后必须收敛到这里，不能只靠 [0,1] 硬裁。
+# 依据同样是截图实测：上格在 L 224~239 档被推到 ~246、240~255 档停在 ~249，
+# 也就是「压进 246~250 这一窄带」而不是顶到 255。硬裁的话 224~239 整段会
+# 直接变纯白（实测 A 样本 clip_delta +4.3 个百分点、高光层次 0.50→0.25）。
+# 收敛到 0.985（≈251）留 4 个码值给最亮像素拉开差距。
+# 当前 shoulder_amp=0，天花板实际不触发，只作为「将来有人调高 shoulder_amp」
+# 时的安全网（避免直接硬裁到 255）。
+CURVE_CEIL_KNEE = 0.99
+CURVE_CEIL = 1.0
+
+
+def _apply_hdr_curve(out_linear: np.ndarray) -> np.ndarray:
+    """按亮度查曲线、按比例缩放 RGB（保色相），高光端软收敛。
+
+    为什么在**线性**域乘：2^delta 是亮度倍率，乘在线性光上才等价于「亮 k 倍」；
+    乘在 sRGB 码值上会变成非线性缩放，暗部被压得过狠。但天花板判据要落在
+    **码值域**（人眼/直方图都是码值），故：线性乘 gain → 码值域软收敛 → 回线性。
     """
-    sdr_safe = np.maximum(sdr_lum, 1e-6)
-    mapped_safe = np.maximum(mapped_lum, 1e-6)
-    log_sdr = np.log(sdr_safe)
-    log_target = log_sdr + np.float32(amount) * (np.log(mapped_safe) - log_sdr)
-    geo = np.exp(log_target).astype(np.float32)
-    return np.where(sdr_lum <= 1e-6, 0.0, geo).astype(np.float32)
+    lum = np.maximum((out_linear * _LUMA).sum(axis=2), 1e-7)
+    code = _linear_to_srgb(lum)
+    gain = np.power(2.0, hdr_curve_delta(code)).astype(np.float32)
+    lifted = _srgb_to_linear(_soft_knee(_linear_to_srgb(lum * gain),
+                                       CURVE_CEIL_KNEE, CURVE_CEIL))
+    scale = (lifted / lum).astype(np.float32)
+    return (out_linear * scale[..., None]).astype(np.float32)
 
 
 def _resize_rgb(img: Image.Image, size: tuple[int, int]) -> Image.Image:
@@ -269,22 +305,19 @@ def bake(
 
     ltm_stats: dict = {}
     ltm_p = ltm.params_for_profile(opt.profile)
-    display_target = target_mode_for_profile(opt.profile) == "display"
+    use_curve = target_mode_for_profile(opt.profile) == "display"
     if ltm_p is not None:
         # 局部色调映射：输出已经是「1.0 = SDR 白点」的显示线性域。
         ltm_res = ltm.apply(hdr, white, ltm_p)
         mapped_rgb = np.clip(ltm_res[0], 0.0, 1.0)
         ltm_stats = ltm_res[1]
         mapped_lum = (mapped_rgb * _LUMA).sum(axis=2)
-        if display_target:
-            # 出货档（local/wechat）：目标即 HDR 映射结果，按 strength 几何插值，
-            # 超白像素豁免收缩（见 _display_target）。
-            target = _display_target(sdr_lum, mapped_lum, lum, amount, white)
-        else:
-            # 旧行为（faithful）：按 sdr_lum 分流混合 + 增量缩放 + lift_cap。
-            blended = sdr_lum * (1.0 - w) + mapped_lum * w
-            target = sdr_lum + (blended - sdr_lum) * amount
-            target = np.minimum(target, sdr_lum * lift_cap)
+        # 按 sdr_lum 分流 + 增量缩放 + lift_cap。display 与 sdr 的差别只在
+        # 之后那条曲线（见 _apply_hdr_curve），底色映射是同一套 —— 这样
+        # 「中间调不动」这条底线两种模式都成立。
+        blended = sdr_lum * (1.0 - w) + mapped_lum * w
+        target = sdr_lum + (blended - sdr_lum) * amount
+        target = np.minimum(target, sdr_lum * lift_cap)
         scale = np.where(mapped_lum > 1e-6, target / np.maximum(mapped_lum, 1e-6), 0.0)
         raw = mapped_rgb * scale[..., None]
         out = np.clip(raw, 0.0, 1.0)
@@ -299,6 +332,13 @@ def bake(
         raw = hdr * scale
         out = np.clip(raw, 0.0, 1.0)
 
+    # HDR 观感曲线（display 档）：在底色映射之后、量化之前，
+    # 做一次 stop 域的 S 形对比扩张 —— 暗部更黑、高光更亮。
+    # 放在这里是因为它必须作用在「已经锚定过底图」的亮度上，且要在裁切统计之后，
+    # 否则会把曲线带来的高光溢出算成色调映射的裁切。
+    if use_curve:
+        out = np.clip(_apply_hdr_curve(out), 0.0, 1.0)
+
     # 裁切率：**按单通道**统计压缩前的 >1。用亮度判会恒为 0（亮度被归一化到 target ≤ 1），
     # 但单通道确实会溢出（scale>1 时主导通道先超），与 Kotlin 的统计口径一致。
     clip_mask = (raw > 1.0).any(axis=2)
@@ -310,9 +350,10 @@ def bake(
     # 「暗部 19.2 → 0.7」的根因，与 anchor 无关。
     if opt.contrast != 1.0:
         srgb = np.clip((srgb - 0.5) * opt.contrast + 0.5, 0.0, 1.0)
-    if opt.saturation != 1.0:
+    sat_eff = opt.saturation * (HDR_CURVE["sat_extra"] if use_curve else 1.0)
+    if sat_eff != 1.0:
         l2 = (srgb * _LUMA).sum(axis=2, keepdims=True)
-        srgb = np.clip(l2 + (srgb - l2) * opt.saturation, 0.0, 1.0)
+        srgb = np.clip(l2 + (srgb - l2) * sat_eff, 0.0, 1.0)
 
     # 三角分布抖动（±0.5 LSB）：8bit 量化前打散台阶，抑制平滑渐变处的 banding。
     # 固定种子 → 同参数下输出确定性（Golden-file 测试要求）。

@@ -70,8 +70,8 @@ def main() -> int:
     check("strength 作用于增量（kt）", bool(re.search(r"\(blended\s*-\s*sdrLum\[i\]\)\s*\*\s*amount", kt)),
           "HdrBaker.kt 缺 (blended - sdrLum[i]) * amount")
 
-    # ---- 目标模式分派（2026-10-26 display 路径）：两端必须同源 ----
-    # 只要有一端漏了，「Python 出增强图、App 出灰图」这种最坏情况就会静默发生。
+    # ---- 目标模式分派（display = 底图锚定 + HDR 观感曲线）：两端必须同源 ----
+    # 只要有一端漏改，「Python 出增强图、App 出灰图」这种最坏情况就会静默发生。
     check("targetModeForProfile 存在（py）", "def target_mode_for_profile" in py, "bake.py 缺该函数")
     check("targetModeForProfile 存在（kt）", "fun targetModeForProfile" in kt, "HdrBaker.kt 缺该函数")
     py_family = re.search(r'return "sdr" if profile in \((.*?)\)', py)
@@ -81,31 +81,43 @@ def main() -> int:
           and {s.strip().strip('"\'') for s in py_family.group(1).split(",")} == {"off", "faithful"},
           f"py={py_family.group(1) if py_family else None} kt={'off/faithful' if kt_family else None}")
 
-    # ---- display 目标：log 域几何插值，两端公式必须逐项对得上 ----
-    check("displayTarget 存在（py）", "def _display_target(" in py, "bake.py 缺 _display_target")
-    check("displayTarget 存在（kt）", "fun displayTarget(" in kt, "HdrBaker.kt 缺 displayTarget")
-    check("display 公式为 log 域几何插值（py）",
-          bool(re.search(r"(?:log_sdr|np\.log\(sdr_safe\))\s*\+\s*np\.float32\(amount\)\s*\*\s*"
-                         r"\(np\.log\(mapped_safe\)\s*-\s*(?:log_sdr|np\.log\(sdr_safe\))\)", py)),
-          "bake.py 的 log_target 表达式变了")
-    check("display 公式为 log 域几何插值（kt）",
-          bool(re.search(r"logSdr\s*\+\s*amount\.toDouble\(\)\s*\*\s*"
-                         r"\(logMapped\s*-\s*logSdr\)", kt)),
-          "HdrBaker.kt 的 logTarget 表达式变了")
-    check("display 路径纯黑保持 0（两端）",
-          bool(re.search(r"np\.where\(sdr_lum\s*<=\s*1e-6,\s*0\.0,", py))
-          and bool(re.search(r"if \(sdrLum\s*<=\s*1e-6f\) return 0f", kt)),
-          "纯黑归零逻辑两端不一致")
+    # ---- HDR 观感曲线：常量与公式逐项对账 ----
+    check("hdrCurveDelta 存在（py）", "def hdr_curve_delta(" in py, "bake.py 缺 hdr_curve_delta")
+    check("hdrCurveDelta 存在（kt）", "fun hdrCurveDelta(" in kt, "HdrBaker.kt 缺 hdrCurveDelta")
+    check("applyHdrCurve 存在（py）", "def _apply_hdr_curve(" in py, "bake.py 缺 _apply_hdr_curve")
+    check("applyHdrCurve 存在（kt）", "fun applyHdrCurve(" in kt, "HdrBaker.kt 缺 applyHdrCurve")
 
-    # ---- 只有出货档走 display：off/faithful 必须仍落在 legacy 分支 ----
-    check("bake 按模式分支（py）",
-          bool(re.search(r"display_target\s*=\s*target_mode_for_profile\(opt\.profile\)", py))
-          and bool(re.search(r"if display_target:", py)),
-          "bake.py 没按 target_mode 分支")
-    check("bake 按模式分支（kt）",
-          bool(re.search(r"useDisplayTarget\s*=\s*targetModeForProfile\(opt\.profile\)", kt))
-          and bool(re.search(r"if \(useDisplayTarget\)", kt)),
-          "HdrBaker.kt 没按 targetMode 分支")
+    curve_pairs = [
+        ("toe_amp", r'"toe_amp":\s*([\d.]+)', r"TOE_AMP\s*=\s*([\d.]+)f"),
+        ("toe_end", r'"toe_end":\s*([\d.]+)', r"TOE_END\s*=\s*([\d.]+)f"),
+        ("shoulder_amp", r'"shoulder_amp":\s*([\d.]+)', r"SHOULDER_AMP\s*=\s*([\d.]+)f"),
+        ("shoulder_start", r'"shoulder_start":\s*([\d.]+)', r"SHOULDER_START\s*=\s*([\d.]+)f"),
+        ("sat_extra", r'"sat_extra":\s*([\d.]+)', r"SAT_EXTRA\s*=\s*([\d.]+)f"),
+        ("ceil_knee", r"CURVE_CEIL_KNEE\s*=\s*([\d.]+)", r"CURVE_CEIL_KNEE\s*=\s*([\d.]+)f"),
+        ("ceil", r"CURVE_CEIL\s*=\s*([\d.]+)", r"CURVE_CEIL\s*=\s*([\d.]+)f"),
+    ]
+    for name, pat_py, pat_kt in curve_pairs:
+        a, b = num(py, pat_py), num(kt, pat_kt)
+        check(f"HDR 曲线 {name}", a is not None and b is not None and abs(a - b) < 1e-6,
+              f"py={a} kt={b}")
+
+    # 曲线公式两端同形：−toe×(1−smoothstep(0,toe_end,v)) + shoulder×smoothstep(...)
+    check("曲线公式（py）",
+          bool(re.search(r"-c\[\"toe_amp\"\]\s*\*\s*\(1\.0\s*-\s*_smoothstep\(", py)),
+          "bake.py 的 toe 表达式变了")
+    check("曲线公式（kt）",
+          bool(re.search(r"-TOE_AMP\s*\*\s*\(1f\s*-\s*smoothstep\(", kt)),
+          "HdrBaker.kt 的 toe 表达式变了")
+    check("曲线按亮度缩放 RGB（py）",
+          bool(re.search(r"_linear_to_srgb\(lum\)", py)) and "_apply_hdr_curve" in py,
+          "bake.py 曲线没有按亮度查表")
+    check("曲线按亮度缩放 RGB（kt）",
+          bool(re.search(r"linToSrgb(?:Exact)?\(lum\)", kt)),
+          "HdrBaker.kt 曲线没有按亮度查表")
+    # 曲线的 lin↔srgb 往返必须走精确公式：LUT 最近邻误差会被 2^delta 放大
+    check("曲线用精确 sRGB 转换（kt）",
+          "fun linToSrgbExact(" in kt and "fun srgbToLinExact(" in kt,
+          "HdrBaker.kt 曲线仍在用 LUT（会把像素对照推到 mean>1.0）")
 
     # faithful 的 LTM 参数：0.97 / 1.08 / 0.70 两个文件都要有
     for name, token_py, token_kt in [

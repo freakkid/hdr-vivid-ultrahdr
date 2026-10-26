@@ -107,14 +107,16 @@ def params_for_profile(profile: str) -> LtmParams | None:
             shoulder_white=0.93,
             shoulder_span=1.3,
         )
-    # local：观感优先
+    # local：观感优先。2026-10-26 随 HDR 观感曲线上线把 detail_gain 1.32→1.35、
+    # highlight_start 0.78→0.72：曲线负责整体对比扩张，LTM 这里只补局部对比，
+    # 两个参数由「截图反解目标」的扫参定（见 bake.HDR_CURVE 注释）。
     return LtmParams(
         radius_frac=1.0 / 48.0,
         eps=0.2,
         range_compress=0.88,
-        detail_gain=1.32,
+        detail_gain=1.35,
         black_point=0.0020,
-        highlight_start=0.78,
+        highlight_start=0.72,
         shoulder_white=0.93,
         shoulder_span=1.3,
     )
