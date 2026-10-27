@@ -45,6 +45,9 @@ out/t_*.jpg
 # 目视对比材料（含真实照片内容，同 baked 产物处理）
 out/visual/
 
+# 从微信还原出来的原始照片/截图（含隐私，绝不入库）
+out/from_wechat/
+
 # WorkBuddy 会话数据（记忆/追踪，含本机路径与凭据痕迹，绝不入库）
 .workbuddy/
 
