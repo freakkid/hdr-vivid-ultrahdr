@@ -150,11 +150,11 @@ def _smoothstep(e0: float, e1: float, x: np.ndarray) -> np.ndarray:
 # 三个样本的 S 对应 scale：A 0.67 / B 0.84 / C 1.00（ref_S = 2.0）——
 # 这样 C 的 LED 那种 4.4× 的像素拿满剂量，A 的汤面只拿 2/3。
 HDR_CURVE = {
-    "toe_max": 0.52,      # 暗部最大压暗（stop，scale=1 时）
+    "toe_max": 0.65,      # 暗部最大压暗（stop，scale=1 时）
     "toe_end": 0.30,      # 压暗段在 sRGB 码值 0~0.30 之间衰减到 0
-    "lift_max": 0.18,     # 超白像素最大提亮（stop，scale=1 且 excess=S 时）
+    "lift_max": 0.55,     # 超白像素最大提亮（stop，scale=1 且 excess=S 时）
     "lift_eps": 0.06,      # 超出量的软膝尺度（线性亮度）
-    "sat_max": 0.14,      # 最大额外饱和度（比例，scale=1 时）
+    "sat_max": 0.20,      # 最大额外饱和度（比例，scale=1 时）
     # 参考值按**出货强度 0.70** 标定：strength 会缩增益，P99 excess 实测
     # A 0.81 / B ~1.0 / C ~2.0（strength 1.0 时 A 1.34 / B 1.69 / C 3.38）。
     # 取 1.3 使 A 拿 0.62、B 0.77、C 1.00 —— 保住三张图之间的剂量差异。

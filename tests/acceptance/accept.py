@@ -101,20 +101,20 @@ DISPLAY_THRESHOLDS = {
     # 暗部：不再要求「必须更暗」——压暗量已改为按该图 HDR 含量缩放
     # （scale = P99(excess)/1.3）。B 这类超白内容多的图几乎不压（实测 1.001），
     # A/C 压到 0.91~0.99。上限 1.02 仍排除「抬暗部」的旧路线（0.1.24 是 1.88）。
-    "shadow_lift_min": 0.88,
+    "shadow_lift_min": 0.84,
     "shadow_lift_max": 1.02,
     # ---- 自然护栏 ----
     "clip_ratio_max": 0.01,
     "ssim_min": 0.93,
     "sat_ratio_min": 1.00,   # 额外饱和 = 1 + 0.14×scale，实测 1.005~1.091
-    "sat_ratio_max": 1.15,
+    "sat_ratio_max": 1.18,
     # 高光层次下限 0.22：增益驱动的提亮必然吃掉一部分高光层次 —— 提亮的正是
     # 「HDR 超过白点」的那些像素，而它们在 8bit 里本来就逼近 255，加多少压平多少。
     # 已用「头顶空间闸门」把剂量限制在还有余量的像素上（实测 0.70 档 0.25~0.47，
     # 0.40 档 0.58~0.67；不设闸门时 A@0.70 只有 0.17）。要更亮就得更平，
     # 这是 SDR 容器的物理上限，不是参数没调好。clip_delta 与 hl_hf 继续看守。
     "hl_spread_min": 0.22,
-    "hl_hf_min": 0.65,
+    "hl_hf_min": 0.55,
     "hf_all_min": 0.95,
 }
 
@@ -125,7 +125,7 @@ LEGACY_THRESHOLDS = {
     "shadow_lift_max": 1.10,
     "ssim_min": 0.90,
     "sat_ratio_min": 0.92,
-    "sat_ratio_max": 1.15,
+    "sat_ratio_max": 1.18,
     # 「层次少」下限（2026-10-25 加入，当晚随双斜率肩上调）。
     # 首轮依据：local@0.70 把高光分位距压到源的 0.42~0.53、高光局部对比压到
     # 0.64~0.78（3 真实样本 × local/wechat/faithful/off × strength 0.40/0.70）。

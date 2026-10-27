@@ -132,11 +132,11 @@ object HdrBaker {
      * 241~255，抬 +0.06 stop 就需靠天花板压缩，hl_spread 0.50→0.21；抬 +0.20
      * 时掉到 0.08（即用户骂过的「层次少」）。高光那点亮度改由 LTM detailGain 带来。
      */
-    private const val TOE_MAX = 0.52f
+    private const val TOE_MAX = 0.65f
     private const val TOE_END = 0.30f
-    private const val LIFT_MAX = 0.18f
+    private const val LIFT_MAX = 0.55f
     private const val LIFT_EPS = 0.06f
-    private const val SAT_MAX = 0.14f
+    private const val SAT_MAX = 0.20f
     private const val REF_EXCESS = 1.3f
     private const val HEADROOM_CEILING = 0.95f
     private const val HEADROOM_SPAN = 0.25f
